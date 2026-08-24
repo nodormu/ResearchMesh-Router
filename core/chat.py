@@ -112,6 +112,73 @@ plainly rather than approximating it with a tool that is not the right one.
 """
 
 
+def _block_field(block, name: str):
+    """Read a field off a content block that may be an SDK object or a dict.
+
+    Assistant turns hold the SDK's own block objects (straight off
+    `response.content`); the tool_result turns we build ourselves are plain
+    dicts. Anything walking the whole conversation has to cope with both.
+    """
+    if isinstance(block, dict):
+        return block.get(name)
+    return getattr(block, name, None)
+
+
+def _orphaned_tool_uses(messages) -> list[str]:
+    """tool_use ids that never got a tool_result — the poisoned-session check.
+
+    The API requires every tool_use block to be answered in the *immediately
+    following* message. One that isn't doesn't just break the turn it happened
+    in: the block stays in the history for the life of the process, so every
+    later request fails the same way, however many turns later. That failure
+    reads as "it started 400ing and won't stop", which is very hard to tell
+    from a context overflow without looking.
+
+    `_resolve_pending_tool_uses` exists to make this impossible. This is how you
+    find out it didn't.
+    """
+    answered: set[str] = set()
+    issued: list[str] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            kind = _block_field(block, "type")
+            if kind == "tool_use":
+                block_id = _block_field(block, "id")
+                if block_id:
+                    issued.append(block_id)
+            elif kind == "tool_result":
+                used = _block_field(block, "tool_use_id")
+                if used:
+                    answered.add(used)
+    return [i for i in issued if i not in answered]
+
+
+def _approx_size(messages) -> tuple[int, int]:
+    """(message count, character count) for the conversation.
+
+    Deliberately a character count rather than a real token count:
+    `count_tokens` cannot measure this conversation at all, because
+    `web_search`/`web_fetch` are server tools and that endpoint rejects them
+    outright. Roughly 3-4 characters per token is close enough to tell "nowhere
+    near the window" from "at it", which is the only question being asked here.
+    """
+    chars = 0
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            chars += len(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    chars += len(str(block.get("content") or block.get("text") or ""))
+                else:
+                    chars += len(str(getattr(block, "text", "") or ""))
+    return len(messages), chars
+
+
 def _report_usage(response) -> None:
     """One line of token accounting. From the second request onward, cache read
     should be large and cache write near zero — that means the prefix is being
@@ -259,6 +326,63 @@ class Chat:
             for block in blocks
         ]
         self.claude_service.add_user_message(self.messages, results)
+
+    def clear(self) -> str:
+        """`/clear` — drop the conversation, keep the process and the fleet.
+
+        The only recovery path from a poisoned history. `self.messages` lives
+        for the life of the process, so both of the failures that persist —
+        an unanswered tool_use block, and a conversation that has outgrown the
+        context window — leave every subsequent turn failing identically. Before
+        this existed the only way out was killing the router, which also drops
+        every worker connection and every worker's session id with it.
+
+        Deliberately does not touch `self.clients`: the fleet is unrelated to
+        the conversation, and reconnecting three machines to recover from a bad
+        turn would be the expensive half of a restart for none of the benefit.
+        """
+        count, chars = _approx_size(self.messages)
+        orphans = _orphaned_tool_uses(self.messages)
+        self.messages = []
+        detail = f"cleared {count} messages (~{chars:,} chars)"
+        if orphans:
+            detail += (
+                f" — including {len(orphans)} unanswered tool_use block"
+                f"{'s' if len(orphans) != 1 else ''}, which is what was "
+                f"breaking every turn"
+            )
+        return f"[{detail}]"
+
+    def _report_api_failure(self, error: Exception) -> None:
+        """Say which failure this is, rather than leaving it to guesswork.
+
+        The two that persist look identical from the outside — the router
+        starts 400ing and does not stop — but they have different causes and
+        different fixes, and the error text plus these two numbers separate
+        them every time.
+        """
+        text = str(error)
+        count, chars = _approx_size(self.messages)
+        orphans = _orphaned_tool_uses(self.messages)
+
+        print(f"[api error] {text}")
+        print(f"[api error] conversation: {count} messages, ~{chars:,} chars")
+
+        if orphans:
+            print(
+                f"[api error] {len(orphans)} unanswered tool_use block(s): "
+                f"{', '.join(orphans[:3])}"
+                f"{' …' if len(orphans) > 3 else ''}"
+            )
+            print(
+                "[api error] this poisons every later request in the session. "
+                "Run /clear."
+            )
+        elif "too long" in text.lower() or "context" in text.lower():
+            print(
+                "[api error] the conversation has outgrown the context window. "
+                "Run /clear."
+            )
 
     async def workers_listing(self) -> str:
         """`/workers` — the fleet that is up, and the names `/dagent` takes.
@@ -409,12 +533,20 @@ class Chat:
                 )
                 break
 
-            response = self.claude_service.chat(
-                messages=self.messages,
-                system=system,
-                tools=tool_defs,
-                thinking=thinking,
-            )
+            try:
+                response = self.claude_service.chat(
+                    messages=self.messages,
+                    system=system,
+                    tools=tool_defs,
+                    thinking=thinking,
+                )
+            except Exception as e:
+                # Diagnose before returning. Both persistent failures leave the
+                # history in a state where every later turn fails the same way,
+                # so the useful information is *why*, and it is gone as soon as
+                # this returns a bare error string.
+                self._report_api_failure(e)
+                return f"[api error: {e}]"
             if SHOW_USAGE:
                 _report_usage(response)
             if thinking:

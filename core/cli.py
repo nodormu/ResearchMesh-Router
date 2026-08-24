@@ -31,6 +31,15 @@ class CliApp:
                     print(await self.agent.workers_listing())
                     continue
 
+                # `/clear` is the recovery path from a history the API will no
+                # longer accept — an unanswered tool_use block, or a
+                # conversation past the context window. Both persist for the
+                # life of the process, so without this the only way out is
+                # killing the router and every worker connection with it.
+                if text in ("/clear", "/reset"):
+                    print(self.agent.clear())
+                    continue
+
                 thinking = False
                 if text.startswith("/think "):
                     text = text[len("/think "):]

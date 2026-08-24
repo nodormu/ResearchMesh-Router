@@ -15,6 +15,10 @@ this repo is a different set of things from ResearchMesh:
   7. the local half of the tool list is legal, cannot collide with a worker's
      namespaced name, and a turn mixing local and worker calls still returns one
      result per block in order
+  8. `/dagent` withholds every local schema, and `/clear` plus the failure
+     report can tell the two *persistent* 400s apart — an unanswered tool_use
+     block and a conversation past the context window both leave every later
+     turn failing identically, and they need different fixes
 
 (2) is the whole reason this repo exists. Two ResearchMesh workers both expose a
 tool called `delegate`, and sending both to the API is a hard failure:
@@ -435,6 +439,76 @@ def check_dagent_and_workers() -> None:
     )
 
 
+def check_clear_and_diagnostics() -> None:
+    """`/clear`, and telling the two persistent 400s apart.
+
+    Both leave the router failing every turn with no way back, and from the
+    outside they look the same. The orphan detector is what separates them, so
+    it is checked against a history that is deliberately poisoned — the
+    condition `_resolve_pending_tool_uses` exists to prevent, constructed here
+    on purpose because a passing router never produces one.
+    """
+    print("/clear and diagnostics")
+    from core.chat import Chat, _approx_size, _orphaned_tool_uses
+    from core.claude import Claude
+
+    chat = Chat(claude_service=cast(Claude, None), clients={}, descriptions={})
+
+    # A healthy exchange: tool_use answered by a matching tool_result.
+    healthy = [
+        {"role": "user", "content": "do a thing"},
+        {"role": "assistant", "content": [Block("t1", "bash")]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "done"}
+            ],
+        },
+    ]
+    check("a healthy history has no orphans", _orphaned_tool_uses(healthy) == [])
+
+    # The poisoned case: a tool_use nothing ever answered.
+    poisoned = healthy + [
+        {"role": "assistant", "content": [Block("t2", "gpu__delegate")]},
+        {"role": "user", "content": "and another thing"},
+    ]
+    check(
+        "an unanswered tool_use is detected",
+        _orphaned_tool_uses(poisoned) == ["t2"],
+        str(_orphaned_tool_uses(poisoned)),
+    )
+
+    count, chars = _approx_size(poisoned)
+    check("size report counts every message", count == len(poisoned), str(count))
+    check("size report counts characters", chars > 0, str(chars))
+
+    # /clear must actually empty it, and say what it threw away.
+    chat.messages = cast(list, list(poisoned))
+    report = chat.clear()
+    check("clear() empties the conversation", chat.messages == [])
+    check("clear() reports the message count", "5 messages" in report, report)
+    check(
+        "clear() names the unanswered block as the cause",
+        "unanswered tool_use" in report,
+        report,
+    )
+    check("clear() is safe on an empty conversation", "0 messages" in chat.clear())
+
+    # The diagnostic must not raise on either failure shape — it runs on an
+    # already-failing path, so an exception here would mask the real error.
+    for label, err in (
+        ("overflow", Exception("prompt is too long: 1200000 tokens > 1000000")),
+        ("orphan", Exception("tool_use ids were found without tool_result")),
+    ):
+        chat.messages = cast(list, list(poisoned))
+        try:
+            chat._report_api_failure(err)
+            ok = True
+        except Exception as e:
+            ok, label = False, f"{label}: {e}"
+        check(f"failure report survives a {label} error", ok)
+
+
 def main() -> int:
     sys.path.insert(0, str(ROOT))
     for step in (
@@ -445,6 +519,7 @@ def main() -> int:
         check_fanout_and_results,
         check_local_tools,
         check_dagent_and_workers,
+        check_clear_and_diagnostics,
     ):
         step()
         print()
