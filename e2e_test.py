@@ -4,7 +4,8 @@
 
 Unlike `smoke_test.py` this is **not** part of the standard gates: it needs
 ANTHROPIC_API_KEY, makes real requests, and takes ~15s. Run it when you touch
-`core/tools.py`, `mcp_client.py`, or anything about how a turn reaches a worker.
+`core/tools.py`, `core/chat.py`, `mcp_client.py`, or anything about how a turn
+reaches a worker.
 
 It exists because `smoke_test.py` proves the router's invariants against fakes
 inside one process, which leaves three claims resting on assertion alone:
@@ -163,10 +164,15 @@ async def main() -> int:
         print(f"\n--- router answer ({elapsed:.1f}s) ---\n{answer}\n---")
 
         used = tool_names_used(chat.messages)
+        # Containment, not equality. The router carries 18 local tools of its
+        # own now, so the model may legitimately reach for one during this turn
+        # — that says nothing about the claim under test, which is only that
+        # both *workers* were called off their description headers alone. An
+        # equality check here would fail on an unrelated `bash` call.
         check(
             "the model called both workers from the descriptions alone",
-            used == set(names),
-            f"called {sorted(used)}",
+            set(names) <= used,
+            f"called {sorted(used)}, missing {sorted(set(names) - used)}",
         )
         check(
             "both workers' replies reached the model",
