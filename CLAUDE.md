@@ -268,8 +268,21 @@ worker MCP tools**.
   was a `timedelta` in 1.x. Connect stays at 15s deliberately, so an
   switched-off machine fails fast instead of hanging the turn.
 
-- **`core/cli.py`** — was verbatim from ResearchMesh; now carries the two
-  router-specific commands, which is the only reason it diverged.
+- **`core/cli.py`** — was verbatim from ResearchMesh; now carries the
+  router-specific commands, which is the only reason it diverged. (`/clear` was
+  added to both repos and is not a divergence.)
+
+  - **`/clear`** (also `/reset`) — empties `self.messages`, keeps the fleet
+    connected. This is the recovery path from the two failures that *persist*:
+    an unanswered `tool_use` block, which stays in the history for the life of
+    the process and fails every later request, and a conversation past the
+    context window. Before it existed the only way out was killing the router,
+    which also drops every worker connection and every worker-side `session` id.
+    `Chat._report_api_failure` prints which of the two you hit — it checks for
+    orphaned `tool_use` ids directly rather than guessing from the error text.
+    Note the size report is in **characters, not tokens**: `count_tokens`
+    cannot measure this conversation at all, because `web_search`/`web_fetch`
+    are server tools and that endpoint rejects them.
 
   - **`/workers`** — the fleet that is **up**, with the exact names `/dagent`
     takes. Answered locally without spending a turn. It rebuilds the index

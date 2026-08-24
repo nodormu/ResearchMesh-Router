@@ -91,8 +91,15 @@ Then just type. At the `>` prompt:
 | `/dagent <task>` | delegate-only: the local tools are withheld for this turn |
 | `/dagent <worker> <task>` | the same, pinned to one machine |
 | `/think <anything>` | give Claude longer to reason |
+| `/clear` | drop the conversation, keep the workers connected |
 
 **Ctrl-C** exits and shuts everything down cleanly.
+
+**If it starts returning 400s and won't stop, run `/clear`.** Two failures
+persist for the life of the process — an unanswered `tool_use` block, and a
+conversation past the context window — and both make every later turn fail
+identically. The error report names which one you hit; `/clear` recovers from
+either without dropping your worker connections.
 
 **Why `/dagent` exists.** A local `bash` is instant; a `delegate` takes minutes
 and has to be written as an outcome. Left alone Claude prefers the local one and
