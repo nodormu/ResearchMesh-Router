@@ -124,6 +124,13 @@ async def main() -> int:
         print("\nthe premise: duplicate tool names are rejected by the API")
         api = Anthropic()
 
+        # `count_tokens` works here only because `index.tool_defs` is
+        # worker-only. It cannot validate the array the router actually sends:
+        # that one also carries `web_search`/`web_fetch`, and the endpoint
+        # answers "Server tools are not supported in the count_tokens
+        # endpoint" — a 400 that looks like a tool-list problem and is not.
+        # Widen this to include local_tools.TOOLS and you must switch to a real
+        # `beta.messages.create` call.
         def count(tools) -> tuple[bool, str]:
             try:
                 api.messages.count_tokens(
