@@ -4,11 +4,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-ResearchMesh-Router is a command-line agent that **owns no tools and executes
-nothing** — no bash, no editor, no browser, no kernel, no screenshots, no memory
-store. Every capability it has belongs to an MCP server on another machine. Its
-only job is choosing which machine does what, and running independent work
-concurrently.
+ResearchMesh-Router is a command-line agent that routes work across a fleet of
+MCP worker agents on other machines, running independent work concurrently — and
+that **also holds a full local toolset of its own**, merged in from ResearchMesh.
+
+> **This overview changed.** The router originally owned no tools and executed
+> nothing; that was its defining property, and much of what follows was written
+> to explain it. The local tools in `core/` were merged back in deliberately,
+> so where a comment or a doc still says "the router executes nothing", the
+> comment is stale, not the code. What survived the merge unchanged is the part
+> that matters: worker tools are namespaced, and a worker's schemas never reach
+> this process's API request.
+
+Two halves, in one `tools` array on every request:
+
+- **Local tools** — plain names (`bash`, `python`, `computer`, `memory`,
+  `browser_*`, `sql_query`, …), executed in-process on the router's own machine.
+- **Worker tools** — `<worker>__<tool>`, forwarded over MCP to another machine.
+
+They cannot collide: a ResearchMesh worker advertises exactly one tool over MCP
+(`delegate`), and every worker tool is namespaced with a `__` separator that no
+local name contains. `ToolManager.build` also takes a `reserved` set of the local
+names so the two halves are checked for uniqueness against each other rather than
+each in isolation — uniqueness is a property of the whole array, and a duplicate
+400s the entire request, not just the offending tool.
 
 It is built for fleets of **interchangeable** workers: several machines running
 the same agent software, differing only in what is installed, attached, or
@@ -31,12 +50,19 @@ tells you where to be careful.
 
 | File | Where it came from |
 |---|---|
-| `core/cli.py` | copied, still unchanged |
+| `core/cli.py` | copied; diverged when `/workers` and `/dagent` were added |
 | `mcp_client.py` | copied, plus `timeout_seconds` |
-| `main.py`, `core/chat.py` | same skeleton, local-tool wiring removed; `SYSTEM_PROMPT` rewritten |
-| `core/claude.py` | same, minus the beta endpoint |
+| `core/browser.py`, `computer.py`, `config_edit.py`, `data.py`, `documents.py`, `files.py`, `kernel.py`, `memory.py`, `processes.py`, `claude_learned_schemas.py`, `local_tools.py`, `output.py` | copied verbatim in the tool merge, unchanged |
+| `main.py`, `core/chat.py` | same skeleton; local-tool wiring restored, `SYSTEM_PROMPT` rewritten |
+| `core/claude.py` | same, including the beta endpoint (restored with `computer`) |
 | `core/tools.py` | rebuilt for this project; only the result-formatting helpers survive |
 | `smoke_test.py`, `e2e_test.py`, `e2e_worker.py`, `config.toml` | written here |
+
+The twelve tool modules are byte-identical copies. Keep them that way — a fix in
+either repo should be a straight `cp`. `diff -rq ../ResearchMesh/core core`
+currently reports exactly three differing files (`chat.py`, `claude.py`,
+`tools.py`); `cli.py` and all twelve tool modules match byte for byte, and
+anything else appearing in that list is drift worth explaining.
 
 **One thing to know for the next MCP SDK major.** `mcp_client.py` and
 `core/tools.py` are the two files that broke on mcp 1.x → 2.x: the transport
@@ -124,17 +150,18 @@ is itself a ResearchMesh-shaped CLI.
 
 ## Architecture
 
-Request flow: **CLI input → Chat.run() agentic loop → Claude API + worker MCP tools**.
+Request flow: **CLI input → Chat.run() agentic loop → Claude API + local tools +
+worker MCP tools**.
 
 - **`main.py`** — entrypoint. Reads config, connects each `[mcp].servers` entry
   (a worker that fails is reported and skipped, never fatal), builds the
-  worker-description map, and wires a `Chat` into the `CliApp` loop. Unlike
-  ResearchMesh's, it registers no local shutdown callback — there is no browser,
-  kernel or DuckDB connection to release; each worker's `cleanup` is on the same
-  `AsyncExitStack`.
+  worker-description map, and wires a `Chat` into the `CliApp` loop. Like
+  ResearchMesh's, it registers `local_tools.shutdown` on the `AsyncExitStack`
+  alongside each worker's `cleanup` — the router now has a browser, an IPython
+  kernel and a DuckDB connection of its own to release.
 
-- **`core/tools.py`** — **the only file that differs substantially, and the
-  reason this repo exists.** Three changes over ResearchMesh's bridge:
+- **`core/tools.py`** — **the file that differs substantially from ResearchMesh's,
+  and the reason this repo exists.** Three changes over that bridge:
   1. *Namespacing.* Tools are declared as `<worker>__<tool>` and the prefix is
      stripped before the call goes out; the worker never learns it was renamed.
      `_legalise()` enforces the API's `^[a-zA-Z0-9_-]{1,128}$` rule, substituting
@@ -167,34 +194,51 @@ Request flow: **CLI input → Chat.run() agentic loop → Claude API + worker MC
   network round trip per worker up to `MAX_TOOL_ITERATIONS` times per question
   here.
 
-- **`core/chat.py`** — the agentic loop, structurally the same as ResearchMesh's
-  minus the local-tool branch (and therefore minus `_local_result_to_content`;
-  worker images arrive through `execute_blocks` instead). `SYSTEM_PROMPT` is a
-  **full rewrite, not an edit**. ResearchMesh's exists to stop Claude inventing
-  local capabilities it lacks; this one has the opposite problem — every
-  capability is real but lives on a different machine, and nothing in a tool
-  schema conveys that. Left to the schemas alone the model treats the fleet as
-  one computer: reads a path from one worker and writes it on another. The prompt
-  states the topology, that workers share no filesystem or state, that `delegate`
-  wants an outcome rather than a command, how `session` ids work, that batching
-  across workers parallelises but batching within one does not, and that
-  delegations are slow and must not be polled. **Keep it factual and update it if
-  the routing model changes.**
+- **`core/chat.py`** — the agentic loop, structurally the same as ResearchMesh's:
+  `_run_tool_uses` tries each block against `local_tools.execute` first and falls
+  through to `ToolManager.execute_blocks` when no local module owns the name.
+  `_local_result_to_content` is back with it, translating the
+  `core.output.image_result` marker into a real `image` block (worker images take
+  the parallel path through `_call_one`).
 
-- **`core/claude.py`** — thin Anthropic SDK wrapper, and **simpler than
-  ResearchMesh's on purpose**. That version must post to
-  `client.beta.messages.create` with `betas=[computer_20251124]` because it
-  declares the `computer` tool on every request and omitting the header 400s the
-  whole conversation. This client declares no tools of its own, so nothing is
-  beta-gated and `client.messages.create` is correct. Dropping the beta endpoint
-  also deletes the subtlest trap in the original: it returns `BetaMessage`, which
-  is *not* a subclass of `Message`, so the isinstance checks needed a
-  `_RESPONSE_TYPES` tuple or they would silently stuff the response object into
-  `content`. Top-level `cache_control` is available on the stable endpoint too
-  (checked against the installed SDK, not assumed), so prompt caching is
-  unaffected. **A worker's beta-gated tools are entirely its own problem** — it
-  makes its own API call with its own headers; nothing about a worker's schemas
-  reaches this request. That is the property that makes the whole design work.
+  Two things here are *not* copies of ResearchMesh. **Results are reassembled in
+  the original block order** via a `by_id` dict — splitting a turn across two
+  executors and appending the halves would otherwise reorder every mixed turn,
+  and `execute_blocks` promises order for the worker half. And **local tools are
+  declared first** in `tool_defs`: tools render ahead of `system` in the cached
+  prefix, so putting the static half first keeps the front of the prefix stable
+  when a worker drops out mid-session.
+
+  `SYSTEM_PROMPT` is a **full rewrite, not an edit**, and has now been rewritten
+  twice. It used to open with "you have no tools of your own", which the merge
+  made false. It now leads with the local/remote split — plain name means this
+  machine, `<worker>__` means another — because nothing in a tool definition says
+  which, and the model otherwise has no way to tell `python` here from a worker's
+  kernel. The rest states the topology: workers share no filesystem or state with
+  each other *or with this machine*, `delegate` wants an outcome rather than a
+  command, how `session` ids work and that a fresh one does not clear
+  `/memories`, that batching across workers parallelises but batching within one
+  does not, and that delegations are slow and must not be polled. It also has to
+  push *against* the local tools, which are faster and more directly matched to
+  any concrete command the model has in mind — the failure mode after the merge
+  is under-delegation, doing a worker's job on the wrong machine. **Keep it
+  factual and update it if the routing model changes.**
+
+- **`core/claude.py`** — thin Anthropic SDK wrapper, now the same as
+  ResearchMesh's. It posts to `client.beta.messages.create` with
+  `betas=[computer-use-2025-11-24]` because `local_tools` declares the
+  beta-gated `computer` tool on every request, and omitting the header 400s the
+  whole conversation rather than just computer use. That endpoint returns
+  `BetaMessage`, which is **not** a subclass of `Message`, so the isinstance
+  checks need the `_RESPONSE_TYPES` tuple covering both — without it they
+  silently stuff the response object into `content` instead of its blocks. This
+  is the subtlest trap in the file; the tool merge is what brought it back.
+  Top-level `cache_control` works on both endpoints, so prompt caching is
+  unaffected either way. **A worker's beta-gated tools remain entirely its own
+  problem** — it makes its own API call with its own headers, and nothing about
+  a worker's schemas reaches this request. That is still the property that makes
+  the design work, and it is why the router declaring `computer` locally has no
+  bearing on any worker that also has one.
 
   Four constraints on `chat()`, each learned from a 400 and recorded here so
   this file stands alone:
@@ -224,7 +268,32 @@ Request flow: **CLI input → Chat.run() agentic loop → Claude API + worker MC
   was a `timedelta` in 1.x. Connect stays at 15s deliberately, so an
   switched-off machine fails fast instead of hanging the turn.
 
-- **`core/cli.py`** — verbatim from ResearchMesh.
+- **`core/cli.py`** — was verbatim from ResearchMesh; now carries the two
+  router-specific commands, which is the only reason it diverged.
+
+  - **`/workers`** — the fleet that is **up**, with the exact names `/dagent`
+    takes. Answered locally without spending a turn. It rebuilds the index
+    rather than caching one, because a cached listing would happily report a
+    machine that went down ten minutes ago. Workers that failed to connect, or
+    have died since, are simply absent — that is deliberate: absent and
+    unreachable are the same thing from the model's point of view.
+  - **`/dagent [worker] <task>`** — one turn with the local tools **withheld**,
+    optionally pinned to a single machine. The enforcement is the point: it
+    filters `tools`, it does not instruct the model. A local `bash` is faster
+    and more directly matched to any concrete command than a `delegate` that
+    takes minutes, so an instruction is a preference and an absent schema is a
+    fact. `_DELEGATE_ONLY_SUFFIX` is appended to the system prompt as well, only
+    because `SYSTEM_PROMPT` still describes local tools by name and the model
+    would otherwise spend the turn wondering where `bash` went.
+
+    Two costs, both accepted. It **misses the prompt cache in each direction** —
+    tools render ahead of `system`, so changing the list invalidates everything
+    after it on the `/dagent` turn and again on the next ordinary one. And it
+    **aborts rather than sending an empty tool list**: withholding the locals
+    when no worker tools exist would leave a turn with no tools at all, which
+    the model answers from thin air — the exact outcome the command exists to
+    rule out. That path pops the user message back off `self.messages` so an
+    aborted turn leaves no trace.
 
 ## Runtime configuration
 
@@ -234,6 +303,14 @@ Request flow: **CLI input → Chat.run() agentic loop → Claude API + worker MC
 - `CLAUDE_SHOW_USAGE=1` — per-request token and cache counters. Worth more here
   than in ResearchMesh: the tool list is built from *live* workers, so a worker
   dropping out mid-session reshapes the cached prefix and silently costs the hit.
+  Declaring the local tools first limits the damage but does not remove it.
+- `CLAUDE_MEMORY_DIR` — where the local `memory` tool's virtual `/memories` tree
+  actually lives. **Set it explicitly.** It defaults to `./memories` relative to
+  the working directory, so left alone the router grows its own store in this
+  repo. A ResearchMesh worker launched over stdio is safe from colliding with it
+  (`mcp_server.py` chdirs to its own root before anything reads the variable),
+  but a non-ResearchMesh stdio server with relative-path state is not — `main.py`
+  passes no `cwd`, so such a subprocess inherits the router's.
 - `[router] max_parallel` (default 8) — how many workers may be busy at once.
 - `[router] timeout_seconds` (default 900) — per-call deadline; override per
   worker with `timeout_seconds` on its entry.
@@ -269,6 +346,16 @@ Not a port of ResearchMesh's. There is no local tool registry and no
 6. every `tool_use` block gets exactly one `tool_result`, in the original order,
    including for an unknown tool. An unanswered block poisons every later request
    in the session with a 400 about unresolved ids.
+7. the local half of the list is API-legal and cannot collide with a namespaced
+   worker name (the `reserved` set), and a turn **mixing** local and worker calls
+   still returns one result per block in the original order. That last one is the
+   merge's own regression surface: `_run_tool_uses` now assembles results from
+   two executors, and the obvious implementation — locals in a list, workers
+   appended after — silently reorders every mixed turn.
+
+The local checks execute `bash` with no `command`, which returns an error string
+without running anything, so the file stays free of network calls and side
+effects.
 
 ## Conventions carried over from ResearchMesh
 
@@ -278,9 +365,12 @@ Not a port of ResearchMesh's. There is no local tool registry and no
   Don't narrow them.
 - **Cleanup paths must not fail, and must not fail silently** — blanket catch
   *plus* a `print()`. When `S110` fires, the defect it names is the silence.
-- **The app must run from the repo root.**
-- **No approval gating.** The router itself runs nothing, but it will send
-  whatever it decides to any worker, and each worker executes without approval.
+- **The app must run from the repo root.** Sharper since the merge: `memory`'s
+  `CLAUDE_MEMORY_DIR` defaults to a *relative* `./memories`, so the cwd decides
+  whose memory store you get.
+- **No approval gating.** The router now executes locally *and* sends whatever it
+  decides to any worker, and each worker executes without approval either. Two
+  machines' worth of unapproved execution from one prompt.
 
 ## Adding a worker
 

@@ -12,6 +12,9 @@ this repo is a different set of things from ResearchMesh:
   4. a dead worker is skipped rather than taking the fleet down
   5. execution fans out across workers but stays serial within one
   6. every tool_use block gets exactly one tool_result, in the original order
+  7. the local half of the tool list is legal, cannot collide with a worker's
+     namespaced name, and a turn mixing local and worker calls still returns one
+     result per block in order
 
 (2) is the whole reason this repo exists. Two ResearchMesh workers both expose a
 tool called `delegate`, and sending both to the API is a hard failure:
@@ -35,6 +38,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 from mcp.types import CallToolResult, TextContent, Tool
 
@@ -56,6 +60,8 @@ def check(name: str, condition: bool, detail: str = "") -> None:
 
 class Block:
     """Stand-in for an Anthropic tool_use content block."""
+
+    type = "tool_use"
 
     def __init__(self, block_id: str, name: str, payload=None):
         self.id = block_id
@@ -274,6 +280,161 @@ def check_fanout_and_results() -> None:
     )
 
 
+def check_local_tools() -> None:
+    """The local half of the tool list, and its two ways of going wrong.
+
+    Local tools are declared unprefixed alongside the namespaced worker tools,
+    in one `tools` array the API requires to be unique across *both* halves. And
+    once both halves exist, a turn can mix them — which is the only place in the
+    codebase where tool_results are assembled from two different executors.
+    """
+    print("local tools")
+    from core import local_tools
+    from core.chat import Chat
+    from core.claude import BETAS, Claude
+    from core.tools import ToolManager
+
+    names = [t["name"] for t in local_tools.TOOLS]
+    check("local tools are declared", len(names) > 0, f"{len(names)} found")
+    check("no duplicate local names", len(set(names)) == len(names))
+    check(
+        "every local name is API-legal",
+        all(TOOL_NAME_RE.match(n) for n in names),
+        str([n for n in names if not TOOL_NAME_RE.match(n)]),
+    )
+    check(
+        "computer's beta flag is declared",
+        any("computer" in b for b in BETAS),
+        f"BETAS={BETAS}",
+    )
+
+    # A local name must never be reachable as a worker's namespaced name, or the
+    # request 400s on a duplicate and takes every tool down with it.
+    worker = FakeWorker(["delegate"])
+    index = asyncio.run(
+        ToolManager.build(
+            {"w": worker}, {"w": "a worker"}, reserved=set(names)
+        )
+    )
+    declared = [t["name"] for t in index.tool_defs]
+    check(
+        "worker names never collide with local ones",
+        not (set(declared) & set(names)),
+        str(set(declared) & set(names)),
+    )
+
+    # A mixed turn: local, worker, local, unknown. Every block owes exactly one
+    # result, and the order must survive being split across two executors.
+    # `_run_tool_uses` never touches claude_service, so a cast keeps the check
+    # focused on routing rather than dragging a live API client in.
+    chat = Chat(
+        claude_service=cast(Claude, None),
+        clients={"w": worker},
+        descriptions={},
+    )
+    # names[0] is `bash` with no `command` — it returns an error string without
+    # running anything, which keeps this check as network- and side-effect-free
+    # as the rest of the file.
+    blocks = [
+        Block("b1", names[0]),
+        Block("b2", "w__delegate"),
+        Block("b3", names[0]),
+        Block("b4", "totally__unknown"),
+    ]
+
+    class FakeMessage:
+        content = blocks
+
+    results = asyncio.run(chat._run_tool_uses(FakeMessage(), index))
+    check("one result per block in a mixed turn", len(results) == len(blocks))
+    check(
+        "mixed results keep the original block order",
+        [r["tool_use_id"] for r in results] == [b.id for b in blocks],
+        str([r["tool_use_id"] for r in results]),
+    )
+    check(
+        "the worker block reached the worker",
+        worker.calls == ["delegate"],
+        str(worker.calls),
+    )
+
+
+def check_dagent_and_workers() -> None:
+    """`/dagent` must withhold the local tools, not merely discourage them.
+
+    The whole point is that it is mechanical: a local `bash` is faster and more
+    directly matched to any concrete command than a `delegate` that takes
+    minutes, so an instruction is a preference the model can talk itself out of
+    and an absent schema is not. If a refactor ever reverts this to a prompt
+    tweak, every other check here still passes and the failure is invisible —
+    the model just quietly does a worker's job on the wrong machine.
+    """
+    print("/dagent and /workers")
+    from core import local_tools
+    from core.chat import Chat
+    from core.claude import Claude
+    from core.tools import ToolManager
+
+    local_names = {t["name"] for t in local_tools.TOOLS}
+    workers = {"alpha": FakeWorker(["delegate"]), "beta": FakeWorker(["delegate"])}
+    descriptions = {"alpha": "the first box", "beta": "the second box"}
+    chat = Chat(
+        claude_service=cast(Claude, None),
+        clients=workers,
+        descriptions=descriptions,
+    )
+
+    index = asyncio.run(
+        ToolManager.build(workers, descriptions, reserved=local_names)
+    )
+    check("both workers are up", index.worker_ids() == ["alpha", "beta"])
+    check(
+        "defs_for narrows to one worker",
+        [t["name"] for t in index.defs_for("beta")] == ["beta__delegate"],
+        str([t["name"] for t in index.defs_for("beta")]),
+    )
+    check(
+        "defs_for is empty for a worker that is not up",
+        index.defs_for("gone") == [],
+    )
+
+    listing = asyncio.run(chat.workers_listing())
+    check("listing names every worker up", all(w in listing for w in workers))
+    check("listing carries the routing blurb", "the second box" in listing)
+
+    # `/dagent` parsing: a leading worker name is a pin, anything else is task
+    # text — a task that merely starts with a word must not lose it.
+    check(
+        "a leading worker name is peeled off",
+        chat.split_worker("beta render the scene") == ("beta", "render the scene"),
+    )
+    check(
+        "an unknown leading word stays in the task",
+        chat.split_worker("render the scene") == (None, "render the scene"),
+    )
+    check(
+        "a bare worker name is not a task",
+        chat.split_worker("beta") == (None, "beta"),
+    )
+
+    # The guarantee itself, checked on the schemas that would actually be sent.
+    everything = [t["name"] for t in local_tools.TOOLS + index.tool_defs]
+    check("a normal turn offers both halves", local_names <= set(everything))
+    remote = [t["name"] for t in index.tool_defs]
+    check(
+        "a /dagent turn offers no local tool",
+        not (local_names & set(remote)),
+        str(local_names & set(remote)),
+    )
+    check("a /dagent turn still offers the workers", len(remote) == 2)
+    pinned = [t["name"] for t in index.defs_for("alpha")]
+    check(
+        "a pinned /dagent turn offers only that worker",
+        pinned == ["alpha__delegate"],
+        str(pinned),
+    )
+
+
 def main() -> int:
     sys.path.insert(0, str(ROOT))
     for step in (
@@ -282,6 +443,8 @@ def main() -> int:
         check_namespacing,
         check_dead_worker_skipped,
         check_fanout_and_results,
+        check_local_tools,
+        check_dagent_and_workers,
     ):
         step()
         print()

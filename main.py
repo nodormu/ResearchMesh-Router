@@ -6,6 +6,7 @@ from contextlib import AsyncExitStack
 
 from anthropic import Anthropic
 
+from core import local_tools
 from core.chat import Chat
 from core.claude import Claude
 from core.cli import CliApp
@@ -266,9 +267,13 @@ async def main():
 
             clients[client_id] = client
 
-        # Nothing local to shut down: this client has no browser, no kernel and
-        # no DuckDB connection to release. Each worker's cleanup is registered
-        # above and runs on the same stack.
+        # The router now owns local tools, so it has a browser, an IPython
+        # kernel and a DuckDB connection of its own to release — registered on
+        # the same stack as each worker's cleanup. `local_tools.shutdown`
+        # isolates each step internally, so one tool failing to close cannot
+        # skip the others or turn a Ctrl-C into a traceback.
+        stack.push_async_callback(local_tools.shutdown)
+
         chat = Chat(
             clients=clients,
             claude_service=claude_service,

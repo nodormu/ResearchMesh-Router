@@ -146,6 +146,29 @@ class ToolIndex:
     def __len__(self) -> int:
         return len(self.tool_defs)
 
+    def worker_ids(self) -> list[str]:
+        """Workers that answered `list_tools` this turn, in declaration order.
+
+        This is the fleet as it exists *right now*, which is what `/workers`
+        reports and what `/dagent <name>` resolves against. A worker that failed
+        to connect never reached this index, and one that died since startup was
+        dropped by `build`; either way it is not here, and both are the same
+        thing from the model's point of view — a machine it cannot reach.
+        """
+        seen: dict[str, None] = {}
+        for worker_id in self._workers.values():
+            seen.setdefault(worker_id, None)
+        return list(seen)
+
+    def defs_for(self, worker_id: str) -> list[dict[str, Any]]:
+        """Just this worker's tool schemas — the `/dagent <name>` pin."""
+        names = {
+            declared
+            for declared, owner in self._workers.items()
+            if owner == worker_id
+        }
+        return [t for t in self.tool_defs if t["name"] in names]
+
     def summary(self) -> str:
         """`2 workers, 5 tools` — printed at startup and by /workers."""
         workers = len(set(self._workers.values()))
@@ -162,6 +185,7 @@ class ToolManager:
         cls,
         clients: Mapping[str, Worker],
         descriptions: Optional[Mapping[str, str]] = None,
+        reserved: Optional[set[str]] = None,
     ) -> ToolIndex:
         """List every worker's tools and namespace them into one flat set.
 
@@ -169,13 +193,21 @@ class ToolManager:
         config.toml entry — what that box *is*, which is the thing the model
         needs and the worker itself cannot tell it.
 
+        `reserved` is names already spoken for elsewhere in the request — in
+        practice the router's own local tools, which are declared unprefixed
+        alongside this index. Uniqueness is enforced across the whole `tools`
+        array, not per source, so a name this builder cannot see is still a name
+        it must not emit. A collision is unlikely (a namespaced tool contains
+        `__` and a local one does not), but the cost of one is a 400 that takes
+        down the entire request rather than the single tool.
+
         A worker that fails to answer `list_tools` is skipped with a warning
         rather than taking the turn down; it may have died since startup, and
         the rest of the fleet is still usable. That matches how main.py treats a
         worker that fails to connect in the first place.
         """
         index = ToolIndex()
-        used: set[str] = set()
+        used: set[str] = set(reserved or ())
         descriptions = descriptions or {}
 
         for worker_id, client in clients.items():

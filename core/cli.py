@@ -22,13 +22,38 @@ class CliApp:
                 if not user_input.strip():
                     continue
 
-                text = user_input
+                text = user_input.strip()
+
+                # `/workers` answers locally and never reaches the model — it is
+                # a question about this process's state, not something to spend
+                # a turn on.
+                if text in ("/workers", "/workers "):
+                    print(await self.agent.workers_listing())
+                    continue
+
                 thinking = False
                 if text.startswith("/think "):
                     text = text[len("/think "):]
                     thinking = True
 
-                response = await self.agent.run(text, thinking=thinking)
+                # `/dagent [worker] <task>` withholds the local tools for one
+                # turn, optionally pinning to a single machine.
+                remote_only = False
+                worker = None
+                if text.startswith("/dagent "):
+                    remote_only = True
+                    text = text[len("/dagent "):].strip()
+                    worker, text = self.agent.split_worker(text)
+                    if not text:
+                        print("[usage: /dagent [worker] <task>]")
+                        continue
+
+                response = await self.agent.run(
+                    text,
+                    thinking=thinking,
+                    remote_only=remote_only,
+                    worker=worker,
+                )
                 print(f"\nResponse:\n{response}")
 
             except KeyboardInterrupt:

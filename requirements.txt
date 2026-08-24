@@ -1,11 +1,14 @@
 # Runtime dependencies for ResearchMesh-Router.
 #   pip install -r requirements.txt
 #
-# Four packages, and that is the point of this repo. The router executes nothing
-# itself — no browser, no kernel, no screenshots, no SQL engine — so none of
-# ResearchMesh's eleven optional tool backings are needed here, and neither are
-# its apt packages (libreoffice, pandoc, python3-tk, scrot, xvfb) or the
-# Playwright browser download. Those all live on the workers.
+# The first four are the router proper. Everything under "local tools" below
+# backs the tool modules merged in from ResearchMesh — the router now executes
+# work itself as well as delegating it, so it needs the same backings that
+# repo does, plus the same apt packages (libreoffice, pandoc, python3-tk,
+# scrot, xvfb) and `playwright install chromium`.
+#
+# Each of those is imported *inside* its tool's `execute`, so a missing one
+# costs you that tool and an install hint, not the app.
 
 anthropic>=0.51.0        # keep current — the SDK the router talks to Claude with
 mcp[cli]>=2.0,<3         # MCP client + Streamable HTTP transport
@@ -28,3 +31,18 @@ pydantic>=2.0            # imported directly in mcp_client.py; also required by 
 # pinning it here would let this file disagree with whatever mcp resolved to.
 # It is imported lazily inside the http transport, so if that ever stops being
 # true, only http workers break — stdio workers keep running.
+
+# --- local tools ---------------------------------------------------------
+# Backings for the tool modules in core/. Same set and same versions as
+# ResearchMesh, so the two stay comparable.
+playwright>=1.40.0       # `browser_*` — headless browser (core/browser.py)
+jupyter_client>=8.0      # `python` — stateful IPython kernel (core/kernel.py)
+ipykernel>=6.0           # the kernel that jupyter_client launches
+pexpect>=4.9             # `interactive_run` — commands that prompt (core/processes.py)
+ruamel.yaml>=0.18        # `config_edit` — YAML round-trip, comments preserved
+tomlkit>=0.12            # `config_edit` — TOML round-trip, comments preserved
+jsonpath-ng>=1.6         # `config_edit` — optional, only for '$.…' JSONPath queries
+duckdb>=0.10             # `sql_query` — SQL over CSV/Parquet/JSON (core/data.py)
+send2trash>=1.8          # `trash` — recoverable deletes (core/files.py)
+pyautogui>=0.9.54        # `computer` — screen capture + mouse/keyboard (core/computer.py)
+pillow>=10.0             # `computer` — screenshot encode/resize; also pyautogui's backend

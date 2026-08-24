@@ -1,10 +1,11 @@
 import os
+from collections.abc import Mapping
 
-from anthropic.types import MessageParam
+from anthropic.types import MessageParam, ToolResultBlockParam
 
+from core import local_tools
 from core.claude import Claude
-from core.tools import ToolIndex, ToolManager
-from mcp_client import MCPClient
+from core.tools import ToolIndex, ToolManager, Worker
 
 MAX_TOOL_ITERATIONS = 75
 
@@ -16,31 +17,51 @@ SHOW_USAGE = os.getenv("CLAUDE_SHOW_USAGE") == "1"
 
 # Sent as the `system` parameter on every request.
 #
-# ResearchMesh's version of this prompt exists to stop Claude inventing local
-# capabilities it doesn't have. This one has the opposite problem: every
-# capability is real but lives on a *different machine*, and nothing in a tool
-# schema conveys that. Left to the schemas alone the model treats the fleet as
-# one computer — it reads a path from one worker and writes it on another, or
-# assumes the box that has a GPU also has the browser open.
+# This prompt carries two facts at once, and both are things Claude cannot infer
+# from the schemas. First, the tool list is split across machines: some tools run
+# *here* and the rest run on workers elsewhere, and nothing in a tool definition
+# says which. Second, the workers are separate computers — left to the schemas
+# alone the model treats the whole fleet as one, reading a path from one worker
+# and writing it on another.
 #
-# Everything here is a fact about this topology that Claude cannot infer.
+# Before local tools were added this prompt could open with the much stronger
+# "you have no tools of your own". That sentence is now false, and the split
+# below replaces it: the namespacing is what tells local from remote apart.
 SYSTEM_PROMPT = """\
-You are the router in a command-line client that orchestrates a fleet of remote
-worker agents. You have no tools of your own — no shell, no filesystem, no browser,
-no Python. You cannot read a file or run a command yourself. Every tool in your list
-belongs to a worker on another machine, and calling it is the only way anything
-happens.
+You are the router in a command-line client. You have two kinds of tools, and
+telling them apart is the first thing to get right on every call.
 
-Tool names are `<worker>__<tool>`. The part before the double underscore is the
-worker the call runs on, and each tool's description opens with `[worker: name]`
+LOCAL tools have plain names — `bash`, `python`, `computer`, `browser_navigate`,
+`memory`, `sql_query`, and so on. They run on THIS machine, the one the router
+itself is running on. They are fast, they return immediately, and their effects
+land here.
+
+REMOTE tools are named `<worker>__<tool>`. The part before the double underscore
+is the worker the call runs on, and the description opens with `[worker: name]`
 followed by what that machine is for. Read that header before choosing — it is the
 only thing distinguishing two workers that expose identically-named tools.
 
+Every machine has its own copy of the local capabilities. `python` here is not the
+kernel a worker uses; `browser_navigate` here is not a worker's browser page;
+`/memories` here is not a worker's memory. Same names, different computers, no
+shared state.
+
+Prefer the local tools only for work that genuinely belongs on this machine —
+inspecting the router's own files and config, quick calculations, notes to
+`/memories`, and reading anything a worker handed back. Delegate to a worker when
+the task needs that machine specifically: what is installed on it, what is plugged
+into it, what data lives on it, or which network it sits on. A worker exists
+because it has something this machine does not, so doing its job here quietly gets
+you the wrong environment. When a worker is named or implied, use it — do not
+substitute a local tool because it is faster.
+
 Workers are separate machines. They do not share a filesystem, a network view, a
-clipboard, or any state. A path, a running process, a database file, or a browser
-page on one worker does not exist on another. To move data between workers you must
-read it out of one and pass it into the other as part of the task text. Never assume
-a worker can see something another worker produced.
+clipboard, or any state — with each other or with this one. A path, a running
+process, a database file, or a browser page on one worker does not exist on
+another, and a path you read locally does not exist on any worker. To move data
+between machines you must read it out of one and pass it into the other as part of
+the task text. Never assume a worker can see something another worker produced, or
+something you produced here.
 
 Many workers are ResearchMesh instances exposing a single `delegate` tool. That is
 not a command runner — it is a full agent with its own tools that runs its own
@@ -53,14 +74,15 @@ own tools as the task needs before answering.
 worker's Python kernel namespace and browser page. Reuse the same id when following
 up on earlier work on that same worker so it still has the context; use a fresh id
 to start clean. Session ids are per-worker — the same string on two workers is two
-unrelated conversations.
+unrelated conversations. A fresh id does not clear that worker's `/memories`, which
+outlives every session on it; only the kernel, browser page and conversation reset.
 
 Running work in parallel: issuing several tool calls in one turn makes different
 workers run at the same time, which is the main reason this fleet exists. Two calls
 to the *same* worker do not overlap — a ResearchMesh worker has one mouse, one
 browser page and one kernel, and serialises its delegations — so batch across
-workers, not within one. Split genuinely independent work; keep dependent steps in
-order.
+workers, not within one. Local tools are likewise one machine and run in order.
+Split genuinely independent work; keep dependent steps in order.
 
 Delegations are slow. A GUI or browser task can take minutes, and you get one reply
 when it is finished rather than progress updates. Send a task once and wait for it.
@@ -74,6 +96,19 @@ Report what actually happened, and attribute it. Say which worker produced which
 result. If a delegation failed or returned something inconclusive, say so and include
 what it returned. Never present a worker's claim as verified unless it showed you the
 evidence.
+"""
+
+# Appended to SYSTEM_PROMPT on a /dagent turn, where the local tools have been
+# withheld from `tools` entirely. Without this the prompt above still describes
+# local tools by name, and the model spends the turn reasoning about why `bash`
+# is missing. Cheap to add: changing the tool list has already cost the cached
+# prefix for this request, so the extra bytes are free.
+_DELEGATE_ONLY_SUFFIX = """
+
+THIS TURN ONLY: the local tools described above are not available to you. Every
+tool in your list belongs to a worker on another machine. Do this work by
+delegating it. If it genuinely cannot be done on any worker you have, say so
+plainly rather than approximating it with a tool that is not the right one.
 """
 
 
@@ -92,16 +127,46 @@ def _report_usage(response) -> None:
     )
 
 
+def _local_result_to_content(local):
+    """Local tool executors normally return a plain string. They can also return
+    the image marker built by core.output.image_result ({"__kind__": "image",
+    ...}) — the file editor's and memory's `view` on an image file, and every
+    computer-use screenshot — which we translate into a real tool_result content
+    list carrying an `image` block, so the model actually receives pixels
+    instead of a UTF-8 decode error.
+
+    The worker side of this lives in core/tools.py `_call_one`, which builds the
+    same shape out of MCP `ImageContent`."""
+    if isinstance(local, dict) and local.get("__kind__") == "image":
+        return [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": local["media_type"],
+                    "data": local["data"],
+                },
+            },
+            {"type": "text", "text": local["text"]},
+        ]
+    return local
+
+
 class Chat:
     def __init__(
         self,
         claude_service: Claude,
-        clients: dict[str, MCPClient],
+        clients: Mapping[str, Worker],
         descriptions: dict[str, str] | None = None,
         max_parallel: int = 8,
     ):
         self.claude_service: Claude = claude_service
-        self.clients: dict[str, MCPClient] = clients
+        # `Mapping[str, Worker]`, not `dict[str, MCPClient]`, for the reason
+        # core/tools.py spells out: the bridge only needs list_tools/call_tool,
+        # and dict is invariant in its value type, so `dict[str, MCPClient]`
+        # would not satisfy `dict[str, Worker]` on the way through to
+        # ToolManager.build.
+        self.clients: Mapping[str, Worker] = clients
         # worker id -> the routing blurb from its config.toml entry
         self.descriptions: dict[str, str] = descriptions or {}
         self.max_parallel: int = max_parallel
@@ -109,18 +174,61 @@ class Chat:
         self._announced = False
 
     async def _run_tool_uses(self, message, index: ToolIndex) -> list:
-        """Hand every tool_use block to ToolManager, which fans them out.
+        """Route each tool_use block: local executor, or the MCP ToolManager.
 
         Every tool_use block owes the API a matching tool_result in the very
-        next message, no exceptions. `execute_blocks` guarantees one result per
-        block — including for a worker that died mid-call — so unlike
-        ResearchMesh's version there is no local-executor branch here that could
-        raise and orphan the blocks after it.
+        next message, no exceptions. `execute_blocks` guarantees that for the
+        worker side; the local branch below has to guarantee it for itself,
+        which is why the `except` is blanket and per-block rather than around
+        the loop. A local executor that raised and aborted the batch would
+        orphan its own block *and* every block after it.
+
+        Results are reassembled in the original block order. The API does not
+        require it, but `execute_blocks` promises it for worker blocks and a
+        transcript where the results track the calls is worth keeping — routing
+        locals out of the list and appending them back would otherwise reorder
+        every mixed turn.
         """
         blocks = [b for b in message.content if b.type == "tool_use"]
-        return await ToolManager.execute_blocks(
-            index, blocks, max_parallel=self.max_parallel
-        )
+        by_id: dict[str, ToolResultBlockParam] = {}
+        worker_blocks: list = []
+
+        for block in blocks:
+            try:
+                local = await local_tools.execute(block.name, block.input)
+            except Exception as e:
+                print(f"[local tool '{block.name}' raised: {e}]")
+                by_id[block.id] = {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": f"Error executing tool '{block.name}': {e}",
+                    "is_error": True,
+                }
+                continue
+
+            # `None` means no local module owns that name — it belongs to a
+            # worker (or to nothing at all, which execute_blocks answers with
+            # "Could not find that tool").
+            if local is None:
+                worker_blocks.append(block)
+                continue
+
+            by_id[block.id] = {
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": _local_result_to_content(local),
+            }
+
+        if worker_blocks:
+            for block, result in zip(
+                worker_blocks,
+                await ToolManager.execute_blocks(
+                    index, worker_blocks, max_parallel=self.max_parallel
+                ),
+            ):
+                by_id[block.id] = result
+
+        return [by_id[block.id] for block in blocks]
 
     def _resolve_pending_tool_uses(self, response, reason: str) -> None:
         """Guarantee every tool_use block in `response` has a tool_result.
@@ -152,7 +260,71 @@ class Chat:
         ]
         self.claude_service.add_user_message(self.messages, results)
 
-    async def run(self, query: str, thinking: bool = False) -> str:
+    async def workers_listing(self) -> str:
+        """`/workers` — the fleet that is up, and the names `/dagent` takes.
+
+        Deliberately only what is reachable. A worker that failed to connect or
+        has died since is simply absent, which is the same answer the model gets
+        when it tries to call one: that machine is not available this turn.
+
+        Costs one `list_tools` round trip per worker, which is the point — a
+        cached listing could report a machine that went down ten minutes ago.
+        """
+        index = await ToolManager.build(
+            self.clients,
+            self.descriptions,
+            reserved={t["name"] for t in local_tools.TOOLS},
+        )
+        worker_ids = index.worker_ids()
+        if not worker_ids:
+            return "[no workers up]"
+
+        width = max(len(w) for w in worker_ids)
+        lines = []
+        for worker_id in worker_ids:
+            count = len(index.defs_for(worker_id))
+            blurb = self.descriptions.get(worker_id, "").strip() or "—"
+            lines.append(
+                f"  {worker_id:<{width}}  "
+                f"{count} tool{'s' if count != 1 else ''}  {blurb}"
+            )
+        return f"{index.summary()} up\n" + "\n".join(lines)
+
+    def split_worker(self, query: str) -> tuple[str | None, str]:
+        """Peel a leading worker name off a `/dagent` request.
+
+        `gpu-box render the scene` -> ("gpu-box", "render the scene"), but only
+        when that first word is actually a configured worker. Otherwise the
+        whole string is the request — a task legitimately starting with a word
+        that happens to look like a name must not be silently truncated.
+        """
+        head, _, rest = query.strip().partition(" ")
+        if head in self.clients and rest.strip():
+            return head, rest.strip()
+        return None, query.strip()
+
+    async def run(
+        self,
+        query: str,
+        thinking: bool = False,
+        remote_only: bool = False,
+        worker: str | None = None,
+    ) -> str:
+        """One user turn.
+
+        `remote_only` drops the local tools from the request entirely, and
+        `worker` narrows it further to one machine's tools. Both are enforced by
+        *withholding the schemas*, not by instructing the model — the whole
+        difficulty this addresses is that a local `bash` is faster and more
+        directly matched to any concrete command than a `delegate` that takes
+        minutes, so an instruction is a preference and an absent tool is a fact.
+
+        The cost is a cache miss in each direction: tools render ahead of
+        `system` in the cached prefix, so changing the list invalidates
+        everything after it on the `/dagent` turn and again on the next ordinary
+        one. That is worth it against a delegation silently executed on the
+        wrong machine.
+        """
         final_text_response = ""
         self.claude_service.add_user_message(self.messages, query)
 
@@ -160,15 +332,56 @@ class Chat:
         # can't change mid-turn, and re-deriving it was a `list_tools` round
         # trip per worker per loop pass — over the network, up to
         # MAX_TOOL_ITERATIONS times for a single question.
-        index = await ToolManager.build(self.clients, self.descriptions)
-        tool_defs = index.tool_defs
+        index = await ToolManager.build(
+            self.clients,
+            self.descriptions,
+            reserved={t["name"] for t in local_tools.TOOLS},
+        )
+
+        if remote_only:
+            # The local half is withheld, not discouraged. `worker` narrows it
+            # to one machine.
+            tool_defs = (
+                index.defs_for(worker) if worker else list(index.tool_defs)
+            )
+            system = SYSTEM_PROMPT + _DELEGATE_ONLY_SUFFIX
+
+            # Nothing to delegate to. Withholding the local tools *and* having
+            # no worker tools would send a turn with no tools at all, which the
+            # model answers from thin air — the one outcome /dagent exists to
+            # rule out. Bail before spending the request, and unwind the user
+            # message so the aborted turn leaves no trace in self.messages.
+            if not tool_defs:
+                self.messages.pop()
+                target = f"worker '{worker}'" if worker else "no worker"
+                return (
+                    f"[{target} is up but has no tools — nothing to delegate "
+                    f"to. /workers lists the fleet]"
+                    if worker
+                    else "[no workers up — /workers lists the fleet]"
+                )
+        else:
+            # Local tools first, deliberately. Tools render ahead of `system` in
+            # the cached prefix, and this half is static while `index.tool_defs`
+            # is rebuilt from whichever workers answered — so putting the fixed
+            # list first keeps the front of the prefix identical when a worker
+            # drops out mid-session, instead of shifting everything after it.
+            tool_defs = local_tools.TOOLS + index.tool_defs
+            system = SYSTEM_PROMPT
 
         if not self._announced:
-            print(f"[router] {index.summary()}")
-            self._announced = True
-        if not tool_defs:
             print(
-                "[router] no worker tools available — answering without the fleet"
+                f"[router] {len(local_tools.TOOLS)} local tools, "
+                f"{index.summary()}"
+            )
+            self._announced = True
+        if remote_only:
+            target = worker or "the fleet"
+            print(f"[router] delegate-only turn — {target}, no local tools")
+        if not index.tool_defs:
+            print(
+                "[router] no worker tools available — local tools only, "
+                "no fleet"
             )
 
         response = None
@@ -198,7 +411,7 @@ class Chat:
 
             response = self.claude_service.chat(
                 messages=self.messages,
-                system=SYSTEM_PROMPT,
+                system=system,
                 tools=tool_defs,
                 thinking=thinking,
             )

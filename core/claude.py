@@ -1,30 +1,36 @@
 from anthropic import Anthropic
 from anthropic.types import Message
+from anthropic.types.beta import BetaMessage
+
+from core.computer import BETA_FLAG as COMPUTER_BETA
+
+# Betas sent on every request. The `computer` tool's `computer_20251124` schema
+# is beta-gated and local_tools declares it unconditionally, so this header must
+# be unconditional too — omitting it 400s the whole request, not just computer
+# use. The beta Messages endpoint is a superset of the stable one, so nothing
+# else changes shape.
+#
+# This is a straight revert of a simplification that held only while the router
+# had no local tools of its own. A *worker's* beta-gated tools remain entirely
+# the worker's problem — it makes its own API call with its own headers, and
+# nothing about a worker's schemas reaches this request. What changed is that
+# the router now declares `computer` itself.
+BETAS = [COMPUTER_BETA]
+
+# The beta endpoint returns BetaMessage, which is NOT a subclass of Message, so
+# the response-vs-raw-content checks below must accept both. Testing only
+# `Message` would silently stuff the response object into `content` instead of
+# its blocks — the subtlest trap in this file, and the reason `_RESPONSE_TYPES`
+# exists rather than a bare isinstance.
+_RESPONSE_TYPES = (Message, BetaMessage)
 
 
 class Claude:
     """Thin Anthropic SDK wrapper.
 
-    Deliberately simpler than ResearchMesh's copy, and for one reason: this
-    client declares no tools of its own. ResearchMesh has to post to
-    `client.beta.messages.create` with `betas=[computer_20251124]` because it
-    declares the `computer` tool on every single request, and omitting that
-    header 400s the whole conversation rather than just computer use. The router
-    has no `computer` tool — no local tools at all — so there is nothing
-    beta-gated to declare and the stable endpoint is correct.
-
-    Dropping the beta endpoint also removes the subtlest trap in the original:
-    it returns `BetaMessage`, which is *not* a subclass of `Message`, so the
-    isinstance checks below needed a `_RESPONSE_TYPES` tuple covering both or
-    they would silently stuff the response object into `content` instead of its
-    blocks. With one response type that whole hazard is gone.
-
-    (Top-level `cache_control` is available on the stable endpoint too — checked
-    against the installed SDK, not assumed — so prompt caching is unaffected.)
-
-    A worker's own beta-gated tools are entirely its problem: it makes its own
-    API call, with its own headers, from its own machine. Nothing about a
-    worker's tool schemas reaches this request.
+    Posts to `client.beta.messages.create` because the local `computer` tool is
+    beta-gated; see BETAS above. Top-level `cache_control` works on both
+    endpoints, so prompt caching is unaffected by the switch.
     """
 
     def __init__(self, model: str):
@@ -35,7 +41,7 @@ class Claude:
         user_message = {
             "role": "user",
             "content": message.content
-            if isinstance(message, Message)
+            if isinstance(message, _RESPONSE_TYPES)
             else message,
         }
         messages.append(user_message)
@@ -44,12 +50,12 @@ class Claude:
         assistant_message = {
             "role": "assistant",
             "content": message.content
-            if isinstance(message, Message)
+            if isinstance(message, _RESPONSE_TYPES)
             else message,
         }
         messages.append(assistant_message)
 
-    def text_from_message(self, message: Message):
+    def text_from_message(self, message: Message | BetaMessage):
         return "\n".join(
             [block.text for block in message.content if block.type == "text"]
         )
@@ -61,7 +67,7 @@ class Claude:
         stop_sequences=None,
         tools=None,
         thinking=False,
-    ) -> Message:
+    ) -> BetaMessage:
         # No temperature / top_p / top_k. Current models (Sonnet 5, Opus 5, Opus
         # 4.7+) reject non-default sampling parameters with a 400, and the only
         # value they accept is the default — so sending it can never do anything
@@ -70,6 +76,7 @@ class Claude:
             "model": self.model,
             "max_tokens": 8000,
             "messages": messages,
+            "betas": BETAS,
             # Prompt caching. Top-level cache_control auto-places the breakpoint on
             # the last cacheable block, so each request re-reads the stable prefix
             # (tools -> system -> prior turns, in render order) at ~0.1x input price
@@ -105,5 +112,6 @@ class Claude:
         if system:
             params["system"] = system
 
-        message = self.client.messages.create(**params)
+        # Beta endpoint, not client.messages.create — see BETAS above.
+        message = self.client.beta.messages.create(**params)
         return message
