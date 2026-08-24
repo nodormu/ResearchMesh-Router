@@ -7,3 +7,4 @@ __pycache__
 # so nothing here is needed to run or use the project.
 .claude/
 node_modules/
+memories/

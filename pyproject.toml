@@ -6,11 +6,37 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"   # tomllib (used by main.py) is stdlib only from 3.11
+# The four the app cannot start without. Every local-tool backing is optional
+# below rather than here, and that is a real property rather than tidiness: each
+# one is imported *inside* its tool's executor, so a missing package costs you
+# that one tool and an install hint, not the app. It is also what lets CI run
+# the three gates on this list alone, with no browser download, no apt packages
+# and no display.
 dependencies = [
     "anthropic>=0.51.0",
     "mcp[cli]>=2.0,<3",     # 2.0 is a breaking major — see requirements.txt
     "prompt-toolkit>=3.0.51",
     "pydantic>=2.0",
+]
+
+# `pip install -e ".[tools]"` — the same set requirements.txt installs, which is
+# what the README's quick start tells you to use. `computer` and
+# `document_convert` additionally need apt packages (python3-tk, scrot,
+# libreoffice, pandoc) and `browser_*` needs `playwright install chromium`;
+# none of those can be expressed here.
+[project.optional-dependencies]
+tools = [
+    "playwright>=1.40.0",     # browser_*
+    "jupyter_client>=8.0",    # python
+    "ipykernel>=6.0",
+    "pexpect>=4.9",           # interactive_run
+    "ruamel.yaml>=0.18",      # config_edit
+    "tomlkit>=0.12",
+    "jsonpath-ng>=1.6",
+    "duckdb>=0.10",           # sql_query
+    "send2trash>=1.8",        # trash
+    "pyautogui>=0.9.54",      # computer
+    "pillow>=10.0",
 ]
 
 # `ruff check .` should come back clean — that is the bar for an edit here, the
