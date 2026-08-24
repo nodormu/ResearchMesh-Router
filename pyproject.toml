@@ -1,0 +1,60 @@
+[project]
+name = "ResearchMesh-Router"
+version = "0.1.0"
+description = "A CLI orchestrator that routes work across a fleet of ResearchMesh MCP workers."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"   # tomllib (used by main.py) is stdlib only from 3.11
+dependencies = [
+    "anthropic>=0.51.0",
+    "mcp[cli]>=2.0,<3",     # 2.0 is a breaking major — see requirements.txt
+    "prompt-toolkit>=3.0.51",
+    "pydantic>=2.0",
+]
+
+# `ruff check .` should come back clean — that is the bar for an edit here, the
+# same as in ResearchMesh. This section adds no rules; it only lists exemptions.
+#
+# `select` is intentionally left at ruff's defaults rather than pinned. Those
+# defaults do change between ruff versions, so a new release may surface new
+# findings — that is the intended behaviour: you get told about the new rule,
+# and the exemptions below still hold. Triage a new finding rather than assuming
+# it is more of the same.
+[tool.ruff.lint]
+ignore = [
+    # Blanket `except Exception` is the architecture, not an oversight. It is
+    # rarer here than in ResearchMesh (there is no local tool that can crash the
+    # loop) but the remaining sites are load-bearing for the same reason: a
+    # worker on another machine can fail in any way at all, and every tool_use
+    # block owes the API a tool_result in the very next message. Letting an
+    # exception escape doesn't just break the turn, it poisons every later
+    # request in the session with a 400 about unresolved tool_use ids.
+    "BLE001",
+    # `Optional[X]` rather than `X | None`, in mcp_client.py. Cosmetic, and the
+    # file is deliberately kept close to ResearchMesh's copy so the two can be
+    # diffed when the MCP SDK next changes shape.
+    "UP045",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# One blocking `open()` reading config.toml at the top of a standalone
+# diagnostic script. True by the letter of the rule, irrelevant in context:
+# there is no concurrent work to starve.
+"mcp_client.py" = ["ASYNC230"]
+
+# `mypy .` should come back clean, the same bar as `ruff check .`.
+#
+# It earns its place for the same reason it does in ResearchMesh: the one
+# failure mode in this code is a dependency changing underneath it, and mypy
+# type-checks against the *installed* packages. core/tools.py reads snake_case
+# attributes off MCP models whose camelCase spellings survive as serialization
+# aliases — so an SDK downgrade produces a runtime AttributeError on the first
+# real call, which no import check reaches and which mypy catches in one run.
+#
+# Left at mypy's defaults: bodies of unannotated functions are not checked, so
+# this is a floor, not a straitjacket.
+[tool.mypy]
+# httpx2 is imported lazily inside the http transport and is legitimately absent
+# from a bare environment.
+ignore_missing_imports = true

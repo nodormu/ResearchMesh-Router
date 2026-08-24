@@ -1,0 +1,103 @@
+# ResearchMesh-Router — configuration.
+#
+# Non-secret settings only. Bearer tokens are NOT stored here: each worker names
+# the environment variable that holds its token (see README.md).
+
+[claude]
+# Anthropic model to use. The CLAUDE_MODEL environment variable overrides this.
+model = "claude-sonnet-5"
+
+[router]
+# How many workers may be busy at the same time.
+#
+# Tool calls are grouped by worker: the groups run concurrently, and calls
+# within one group run in order. That mirrors the workers themselves — a
+# ResearchMesh worker serialises its `delegate` calls behind a lock because it
+# has one mouse, one browser page and one IPython kernel — so this number is
+# effectively "how many machines at once", not "how many calls at once".
+max_parallel = 8
+
+# Default deadline for a single call to a worker, in seconds.
+#
+# 900 is not arbitrary and the default is not safe to keep: the MCP SDK's own
+# default read timeout is 300s, and a worker driving a desktop GUI routinely
+# runs longer than that. When it expires the work is already done on the far
+# side and simply lost. Override per worker below with `timeout_seconds`.
+timeout_seconds = 900
+
+[mcp]
+# Set enabled = false to skip every worker. The router has no tools of its own,
+# so with no workers it can only hold a conversation.
+enabled = true
+
+# The fleet. Every reachable worker connects and its tools are merged into the
+# single list Claude sees; one that fails prints a warning and is skipped, so a
+# machine being switched off doesn't stop the router.
+#
+# Tool names are namespaced as `<name>__<tool>` before being declared, which is
+# what makes a fleet of identical ResearchMesh workers possible at all — three
+# workers all exposing `delegate` would otherwise be rejected outright with
+# `400 tools: Tool names must be unique`. Keep `name` short, and use only
+# letters, digits, `_` and `-`: anything else is substituted with `_` to satisfy
+# the API's tool-name rules, so `gpu box` and `gpu-box` would collide.
+#
+# Two entry shapes:
+#
+# 1) Streamable HTTP — a worker already running on another machine:
+#   name             label; becomes the tool-name prefix and the [worker: ...] tag
+#   url              the worker's Streamable HTTP endpoint
+#   description      what this machine is FOR — see the note below
+#   token_env        optional; the environment variable holding this worker's
+#                    bearer token. Omit for an unauthenticated worker. Never put
+#                    the token itself here; this file is committed.
+#   timeout_seconds  optional; overrides [router] timeout_seconds
+#   enabled          optional, default true — park a worker without deleting it
+#
+# 2) stdio — a worker this process launches itself as a subprocess (no port):
+#   name, description, timeout_seconds, enabled  as above
+#   command          full argv as a list, e.g. ["python", "/path/mcp_server.py"]
+#   env              optional table of extra environment variables
+#
+# `description` is the field that makes the fleet navigable, and it is the one
+# thing you cannot skip. ResearchMesh's mcp_server.py hardcodes a single
+# description constant, so every worker in the fleet describes itself with
+# byte-identical text; namespacing gives them distinct *names* but nothing to
+# choose between. Write what is true of that machine specifically and would
+# change the routing decision — its OS and session type, what is installed, what
+# is plugged into it, what data lives on it, what it must not be used for.
+#
+# Paths and URLs are expanded before use: `~`, `$USER`, `$HOME`, `${VAR}` in
+# `command`, `url` and the *values* of `env` are substituted from the
+# environment. `env`'s keys and `description` are left alone. An undefined
+# variable is left as written rather than becoming empty, so a typo shows up in
+# the startup warning instead of producing a silently wrong path.
+#
+# Note the trailing slash on the URLs. Starlette 307-redirects `/mcp` to `/mcp/`
+# before the auth middleware runs, so the un-slashed form works but takes an
+# extra round trip on every request.
+#
+# Every entry below is an example and is commented out, so a fresh clone starts
+# clean. Replace them with your own machines.
+servers = [
+#  { name = "workstation",
+#    url = "http://192.168.2.20:8100/mcp/",
+#    token_env = "RESEARCHMESH_MCP_TOKEN",
+#    description = "Linux desktop on a real Xorg session, so it is the only worker whose `computer` tool works. Unreal Engine 5.8.1 and Blender are installed. Use it for anything that has to be seen or clicked on a real screen.",
+#    timeout_seconds = 1800 },
+#
+#  { name = "gpu-box",
+#    url = "http://192.168.2.31:8100/mcp/",
+#    token_env = "GPU_BOX_MCP_TOKEN",
+#    description = "Headless Linux, no display at all — GUI tasks will fail here. Has the CUDA stack and the training datasets under /data. Use it for long compute, model runs, and SQL over the parquet files in /data/warehouse.",
+#    timeout_seconds = 3600 },
+#
+#  { name = "scraper",
+#    url = "http://192.168.2.44:8100/mcp/",
+#    description = "Headless Linux on a separate consumer connection, deliberately outside the office egress IP. Use it for browsing and page extraction. No project source and no credentials on this box.",
+#    timeout_seconds = 600 },
+#
+#  { name = "local",
+#    command = ["python", "/run/media/$USER/POD2/Anthropic/ResearchMesh/mcp_server.py"],
+#    description = "A ResearchMesh worker on this same machine, launched as a subprocess. Shares this filesystem, so it is the one worker that can see the files you are looking at.",
+#    env = { ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY" } },
+]

@@ -1,0 +1,9 @@
+.env
+__pycache__
+.venv
+.DS_Store
+# Claude Code editor config — not part of the app. This project uses the
+# anthropic Client SDK directly (core/claude.py), NOT the Claude Agent SDK,
+# so nothing here is needed to run or use the project.
+.claude/
+node_modules/

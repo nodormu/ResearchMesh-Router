@@ -1,0 +1,30 @@
+# Runtime dependencies for ResearchMesh-Router.
+#   pip install -r requirements.txt
+#
+# Four packages, and that is the point of this repo. The router executes nothing
+# itself — no browser, no kernel, no screenshots, no SQL engine — so none of
+# ResearchMesh's eleven optional tool backings are needed here, and neither are
+# its apt packages (libreoffice, pandoc, python3-tk, scrot, xvfb) or the
+# Playwright browser download. Those all live on the workers.
+
+anthropic>=0.51.0        # keep current — the SDK the router talks to Claude with
+mcp[cli]>=2.0,<3         # MCP client + Streamable HTTP transport
+# The floor is 2.0, not a preference: mcp 2.0 is a breaking major and this code
+# uses the new API — `streamable_http_client` in mcp_client.py (renamed from
+# `streamablehttp_client`, and headers now arrive via an httpx2 client rather
+# than a `headers=` argument), `read_timeout_seconds` as a plain float on
+# ClientSession (it was a timedelta in 1.x), and snake_case model fields in
+# core/tools.py (`input_schema`, `is_error`, `mime_type`). None of it runs on
+# 1.x. The camelCase spellings survive as serialization *aliases*, so
+# constructing a model still works either way while attribute reads break —
+# which is why a 1.x/2.x mismatch in core/tools.py is a runtime AttributeError
+# that no import check catches, and why `mypy .` is a configured gate here.
+# The `<3` matches what claude-agent-sdk declares, so the two can share a venv.
+prompt-toolkit>=3.0.51   # interactive CLI REPL
+pydantic>=2.0            # imported directly in mcp_client.py; also required by mcp/anthropic
+
+# httpx2 is used directly by mcp_client.py (for the long read timeout a worker
+# needs) but is deliberately not listed: it arrives as a dependency of mcp, and
+# pinning it here would let this file disagree with whatever mcp resolved to.
+# It is imported lazily inside the http transport, so if that ever stops being
+# true, only http workers break — stdio workers keep running.
