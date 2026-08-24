@@ -174,11 +174,12 @@ from [ResearchMesh](https://github.com/nodormu/ResearchMesh) (same author, MIT).
 `core/cli.py` is still unchanged from it.
 
 Worth knowing as a maintainer rather than as trivia: `mcp_client.py` and
-`core/tools.py` are the two files that broke on the mcp 1.x → 2.x major, and
-their equivalents in ResearchMesh broke the same way. The next SDK major will
-land in both. There is no shared git ancestry to cherry-pick across, so that is
-a manual port — worth glancing at how the other project solved it before solving
-it again here.
+`core/tools.py` are the two files that broke on the mcp 1.x → 2.x major, and the
+equivalents in ResearchMesh broke the same way. That is already fixed here — the
+code was copied after the fix — but it marks where a future SDK major would land
+in both projects. The separate histories cost little if it does: `core/cli.py`
+is byte-identical to its counterpart and `mcp_client.py` differs by about nine
+lines, so `diff -u` between the two checkouts shows everything.
 
 ## Project layout
 

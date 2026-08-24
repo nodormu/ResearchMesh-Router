@@ -38,16 +38,23 @@ tells you where to be careful.
 | `core/tools.py` | rebuilt for this project; only the result-formatting helpers survive |
 | `smoke_test.py`, `e2e_test.py`, `e2e_worker.py`, `config.toml` | written here |
 
-**One maintenance consequence is worth planning for.** `mcp_client.py` and
-`core/tools.py` are precisely the two files that broke on the mcp 1.x → 2.x
-major: the transport function was renamed, headers moved onto an httpx2 client
-built by `create_mcp_http_client`, `read_timeout_seconds` went from `timedelta`
-to `float`, and the model fields went snake_case. The equivalents in ResearchMesh
-broke identically. The next SDK major will hit both, and because there is no
-shared git ancestry there is nothing to cherry-pick — it is a manual port each
-time. Glance at how the other project solved it before solving it again here.
-`mypy .` is what will tell you it happened, since it checks against the
-*installed* packages.
+**One thing to know for the next MCP SDK major.** `mcp_client.py` and
+`core/tools.py` are the two files that broke on mcp 1.x → 2.x: the transport
+function was renamed, headers moved onto an httpx2 client built by
+`create_mcp_http_client`, `read_timeout_seconds` went from `timedelta` to
+`float`, and the model fields went snake_case. That is history — the code here
+inherited the already-fixed versions — but it identifies where an mcp 3.0 would
+land, and it would land in ResearchMesh too.
+
+If that happens, the two are still trivially comparable despite the separate
+histories: `core/cli.py` is byte-identical to its counterpart, and
+`mcp_client.py` diverges by about nine lines of real code (the `timeout_seconds`
+parameter and its two uses). `diff -u ../ResearchMesh/mcp_client.py
+mcp_client.py` shows the whole of it. Shared ancestry would only have added
+`git cherry-pick` as a convenience.
+
+`mypy .` is what will tell you a break has happened at all, since it checks
+against the *installed* packages rather than a pinned version.
 
 ## Commands
 
