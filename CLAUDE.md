@@ -340,6 +340,14 @@ worker MCP tools**.
   `mcp_server.py --token-env` implements on the serving side; both ends normally
   read the *same* variable name, and a second name is only needed on a machine
   that both serves and consumes.
+- **TLS to a worker needs nothing here.** An `https://` url just works:
+  `create_mcp_http_client` exposes no `verify` parameter to plumb, and none is
+  needed, because httpx2 defaults to `truststore.SSLContext` — the OS trust
+  store — with `SSL_CERT_FILE`/`SSL_CERT_DIR` as a per-process override. So a
+  company CA or a paid certificate is entirely the worker's side of the job
+  (`mcp_server.py --ssl-certfile/--ssl-keyfile`). Don't "add TLS support" here;
+  there is nothing to add, and a hand-built `httpx2.AsyncClient` would drop the
+  SDK's MCP timeout defaults for no gain.
 - **`$VAR` in `[mcp].servers`** — `tomllib` does no substitution, so
   `_expand_paths()` expands `~` and `$VAR`/`${VAR}` in `command`, `url` and the
   *values* of `env`. Keys of `env` are variable names and are left alone, and

@@ -156,6 +156,14 @@ is already done on the far side and simply lost. Default here is 900s; raise it
 per worker for long compute. The *connect* timeout stays at 15s, so a machine
 that's switched off fails in seconds instead of hanging the turn.
 
+**`url` can be `https://`, and nothing here needs configuring for it.** httpx2
+verifies against this machine's OS trust store, so a company CA already deployed
+here — or any public certificate — is trusted as-is; `SSL_CERT_FILE=/path/ca.pem`
+overrides that per process. The certificate is the *worker's* side of the job
+(`mcp_server.py --ssl-certfile/--ssl-keyfile`). Over plain `http://` the bearer
+token and every task and result cross the network in the clear, which is fine on
+a trusted LAN and is not on a corporate one.
+
 ## How work is distributed
 
 Worker calls are grouped by machine. Groups run concurrently; calls within a
