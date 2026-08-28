@@ -58,6 +58,7 @@ def _run_bash(tool_input: dict) -> str:
         result = subprocess.run(
             command,
             shell=True,
+            executable="/bin/bash",
             capture_output=True,
             encoding="utf-8",
             errors="replace",
