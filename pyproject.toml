@@ -27,8 +27,8 @@ dependencies = [
 [project.optional-dependencies]
 tools = [
     "playwright>=1.40.0",     # browser_*
-    "jupyter_client>=8.0",    # python
-    "ipykernel>=6.0",
+    "jupyter_client>=8.9.1",  # python — CurveZMQ encryption; see requirements.txt
+    "ipykernel>=7.0",
     "pexpect>=4.9",           # interactive_run
     "ruamel.yaml>=0.18",      # config_edit
     "tomlkit>=0.12",

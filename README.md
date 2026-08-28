@@ -174,6 +174,7 @@ A turn calling three workers takes as long as the slowest one, not the sum.
 | `CLAUDE_MODEL` | Overrides `[claude] model` in `config.toml`. |
 | `CLAUDE_MEMORY_DIR` | Where `memory` stores `/memories`. Defaults to `./memories` **relative to the working directory** — set it. |
 | `CLAUDE_SHOW_USAGE=1` | Per-request token and prompt-cache counters. |
+| `CLAUDE_KERNEL_ENCRYPTION` | `auto` (default) encrypts the local `python` kernel's ZeroMQ sockets with CurveZMQ, falling back if the installed versions can't; `required` fails the tool rather than running unencrypted; `off` skips it. Covers *this* machine's kernel only — a worker's kernel reads the variable from the worker's own environment. |
 | *(per worker)* | Each `token_env` names the variable holding that worker's bearer token. No `token_env` means unauthenticated. |
 
 Tokens are never stored in `config.toml`, which is committed. Generate one with

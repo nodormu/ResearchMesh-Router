@@ -324,6 +324,13 @@ worker MCP tools**.
   (`mcp_server.py` chdirs to its own root before anything reads the variable),
   but a non-ResearchMesh stdio server with relative-path state is not — `main.py`
   passes no `cwd`, so such a subprocess inherits the router's.
+- `CLAUDE_KERNEL_ENCRYPTION` — `auto` (default), `required`, or `off`, selecting
+  the transport for the local `python` kernel: CurveZMQ-encrypted TCP, then IPC,
+  then plaintext TCP, each tier printing why it fell through (`core/kernel.py`,
+  copied verbatim from ResearchMesh — keep it that way). `required` turns an
+  unencrypted kernel into a tool error instead of a silent fallback. It governs
+  **this machine's kernel only**: a worker runs its own `python` tool in its own
+  process, and reads this variable from *its* environment, not the router's.
 - `[router] max_parallel` (default 8) — how many workers may be busy at once.
 - `[router] timeout_seconds` (default 900) — per-call deadline; override per
   worker with `timeout_seconds` on its entry.

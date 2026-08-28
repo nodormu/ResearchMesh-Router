@@ -36,8 +36,12 @@ pydantic>=2.0            # imported directly in mcp_client.py; also required by 
 # Backings for the tool modules in core/. Same set and same versions as
 # ResearchMesh, so the two stay comparable.
 playwright>=1.40.0       # `browser_*` — headless browser (core/browser.py)
-jupyter_client>=8.0      # `python` — stateful IPython kernel (core/kernel.py)
-ipykernel>=6.0           # the kernel that jupyter_client launches
+# These two floors are where CurveZMQ transport encryption became available:
+# 8.9.1 is KernelManager's `transport_encryption` trait (8.9.0 shipped it but
+# broke restart, which core/kernel.py uses), and ipykernel 7 is the kernel half.
+# Below them the `python` tool still runs, but its sockets are plaintext.
+jupyter_client>=8.9.1    # `python` — stateful IPython kernel (core/kernel.py)
+ipykernel>=7.0           # the kernel that jupyter_client launches
 pexpect>=4.9             # `interactive_run` — commands that prompt (core/processes.py)
 ruamel.yaml>=0.18        # `config_edit` — YAML round-trip, comments preserved
 tomlkit>=0.12            # `config_edit` — TOML round-trip, comments preserved

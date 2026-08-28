@@ -8,11 +8,16 @@ matplotlib, duckdb, Pillow, pypdf) instead of spending a tool slot on each.
 The kernel is launched lazily on first use and reused for the rest of the
 session, so `jupyter_client` only has to be installed if the tool is used.
 
-Requires:  pip install jupyter_client ipykernel
+The ZeroMQ link to the kernel carries every line of code and every result, so
+it is encrypted with CurveZMQ where the installed versions allow it — see
+`_start_manager` for the fallback ladder and `CLAUDE_KERNEL_ENCRYPTION`.
+
+Requires:  pip install 'jupyter_client>=8.9.1' 'ipykernel>=7'
 """
 
 import asyncio
 import json
+import os
 import queue
 import re
 import time
@@ -61,6 +66,7 @@ TOOLS = [
 _TOOL_NAMES = {t["name"] for t in TOOLS}
 _MAX_OUTPUT = 12000
 _DEFAULT_TIMEOUT = 60
+_ENCRYPTION_ENV = "CLAUDE_KERNEL_ENCRYPTION"
 
 _manager = None
 _client = None
@@ -77,22 +83,148 @@ async def execute(name: str, tool_input: dict) -> str:
     return await asyncio.to_thread(_run, tool_input)
 
 
+def _encryption_policy() -> str:
+    value = (os.environ.get(_ENCRYPTION_ENV) or "auto").strip().lower()
+    if value not in ("auto", "required", "off"):
+        print(f"[kernel] ignoring {_ENCRYPTION_ENV}={value!r}: want auto, required or off")
+        return "auto"
+    return value
+
+
+def _start_encrypted():
+    """A CurveZMQ-encrypted kernel, or None if this environment can't provide one.
+
+    The kernel talks to us over ZeroMQ, and by default that is plaintext on four
+    loopback TCP ports — which is exactly what ipykernel warns about on every
+    start ("Kernel is running over TCP without encryption..."). Everything the
+    tool does crosses that wire: source, data, results.
+
+    `transport_encryption` makes the manager generate a CurveZMQ keypair and
+    hand it to the kernel through the connection file (mode 600, so the keys
+    are no more exposed than the HMAC signing key already in there). Both ends
+    then talk CURVE, so the sockets are encrypted and authenticated.
+
+    "required" rather than "auto" on purpose: "auto" provisions keys only when
+    the kernelspec advertises `metadata.supported_encryption`, and silently
+    runs in the clear when it doesn't — the one outcome worth hearing about.
+    "required" turns that into a startup error we can report and act on.
+
+    Needs jupyter_client >= 8.9.1 (8.9.0 shipped the trait but broke restart),
+    an ipykernel whose kernelspec declares curve support, and a pyzmq built
+    with libsodium. Older or partial installs raise here and get the fallbacks.
+    """
+    from jupyter_client import KernelManager
+
+    manager = None
+    try:
+        manager = KernelManager(transport_encryption="required")
+        manager.start_kernel()
+        if manager.curve_publickey is None:  # provisioning quietly did nothing
+            raise RuntimeError("manager provisioned no CurveZMQ keypair")
+        return manager
+    except Exception as e:
+        print(f"[kernel] CurveZMQ transport encryption unavailable: {e}")
+        if manager is not None:
+            _quietly(manager.shutdown_kernel, now=True)
+    return None
+
+
+def _start_ipc():
+    """An unencrypted kernel over IPC, or None. The second-best fallback.
+
+    Not encryption — but a user-only socket file in the Jupyter runtime dir is
+    a smaller target than an open loopback port, and jupyter_client provisions
+    Curve for `transport="tcp"` only, so this cannot be combined with the above.
+
+    `ip` is set explicitly because jupyter_client's default for ipc is the
+    *relative* prefix "kernel-ipc": socket files would land in the process's
+    cwd (the repo root), be left behind if we are killed rather than shut down,
+    and be reused by name — so two ResearchMesh instances would collide.
+    """
+    from jupyter_client import KernelManager
+    from jupyter_core.paths import jupyter_runtime_dir
+
+    manager = None
+    try:
+        runtime_dir = jupyter_runtime_dir()
+        os.makedirs(runtime_dir, exist_ok=True)
+        prefix = os.path.join(runtime_dir, f"researchmesh-{os.getpid()}-ipc")
+        # An AF_UNIX path is capped near 108 bytes and "-<port>" is appended.
+        if len(prefix) > 100:
+            raise OSError(f"socket path prefix too long: {prefix}")
+        manager = KernelManager(transport="ipc", ip=prefix)
+        manager.start_kernel()
+        return manager
+    except Exception as e:
+        print(f"[kernel] IPC transport unavailable: {e}")
+        if manager is not None:
+            _quietly(manager.shutdown_kernel, now=True)
+    return None
+
+
+def _start_manager():
+    """Start the kernel on the most protected transport this box supports.
+
+    Encrypted TCP → IPC → plaintext TCP, each tier printing why it fell through.
+    `CLAUDE_KERNEL_ENCRYPTION=required` stops at the first tier and fails the
+    tool rather than running in the clear; `off` skips straight to IPC.
+    """
+    from jupyter_client import KernelManager
+
+    policy = _encryption_policy()
+    if policy != "off":
+        manager = _start_encrypted()
+        if manager is not None:
+            return manager
+        if policy == "required":
+            raise RuntimeError(
+                f"{_ENCRYPTION_ENV}=required and CurveZMQ is unavailable (see above) — "
+                "`pip install -U 'jupyter_client>=8.9.1' 'ipykernel>=7'`, or unset it to "
+                "fall back to an unencrypted local kernel"
+            )
+
+    manager = _start_ipc()
+    if manager is not None:
+        return manager
+
+    manager = KernelManager()
+    manager.start_kernel()
+    return manager
+
+
+def _new_client(manager):
+    """`manager.client()`, with the CurveZMQ keypair re-supplied as bytes.
+
+    Upstream bug, still present in jupyter_client 8.9.1: `get_connection_info()`
+    `.decode()`s the keypair to str, and `client()` passes that dict straight
+    into the client constructor, whose `curve_publickey`/`curve_secretkey`
+    traits are `Bytes` — so on an encrypted kernel the bare call dies with a
+    TraitError before a single message is sent. `client()` applies **kwargs
+    last, "for manual overrides", so handing the manager's own bytes back in
+    fixes it here and stays correct once upstream does.
+    """
+    extra = {}
+    if getattr(manager, "curve_publickey", None) is not None:
+        extra["curve_publickey"] = manager.curve_publickey
+        extra["curve_secretkey"] = manager.curve_secretkey
+    return manager.client(**extra)
+
+
 def _ensure_kernel() -> str | None:
     """Start the kernel if needed. Returns an error string, or None on success."""
     global _manager, _client
     if _client is not None:
         return None
     try:
-        from jupyter_client import KernelManager
+        import jupyter_client  # noqa: F401
     except ImportError:
         return (
             "jupyter_client is not installed — `pip install jupyter_client "
             "ipykernel` to enable the stateful python tool"
         )
     try:
-        _manager = KernelManager()
-        _manager.start_kernel()
-        _client = _manager.client()
+        _manager = _start_manager()
+        _client = _new_client(_manager)
         _client.start_channels()
         _client.wait_for_ready(timeout=60)
     except Exception as e:
@@ -107,7 +239,7 @@ def _restart() -> str | None:
         return _ensure_kernel()
     try:
         _manager.restart_kernel(now=True)
-        _client = _manager.client()
+        _client = _new_client(_manager)
         _client.start_channels()
         _client.wait_for_ready(timeout=60)
     except Exception as e:
@@ -195,25 +327,27 @@ def _run(tool_input: dict) -> str:
     return json.dumps(payload)
 
 
-def _shutdown_sync():
-    # Both excepts are deliberately blanket (ruff BLE001) rather than narrowed.
-    # These run on the way out and must not be able to fail: stop_channels()
+def _quietly(call, **kwargs):
+    # The except is deliberately blanket (ruff BLE001) rather than narrowed.
+    # This runs on the way out and must not be able to fail: stop_channels()
     # ends in pyzmq's context.destroy(), and zmq.ZMQError derives from
     # Exception, *not* OSError — so `except (RuntimeError, OSError)` lets it
     # escape, out through local_tools.shutdown() and the AsyncExitStack, into a
-    # traceback on an ordinary Ctrl-C. The S110 finding these replaced was about
+    # traceback on an ordinary Ctrl-C. The S110 finding this replaced was about
     # the silent `pass`, not the breadth, so the print() is the actual fix.
+    try:
+        call(**kwargs)
+    except Exception as e:
+        print(f"[kernel] {getattr(call, '__name__', call)} failed (ignored): {e}")
+
+
+def _shutdown_sync():
     global _manager, _client
     if _client is not None:
-        try:
-            _client.stop_channels()
-        except Exception as e:
-            print(f"[kernel] stop_channels failed (ignored): {e}")
+        _quietly(_client.stop_channels)
     if _manager is not None:
-        try:
-            _manager.shutdown_kernel(now=True)
-        except Exception as e:
-            print(f"[kernel] shutdown_kernel failed (ignored): {e}")
+        # Also unlinks the IPC socket files, when that is the transport in use.
+        _quietly(_manager.shutdown_kernel, now=True)
     _manager = _client = None
 
 
