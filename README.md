@@ -143,12 +143,12 @@ Three fields deserve a second look.
 digits, `_` and `-` only. Anything else is substituted with `_`, so `gpu box` and
 `gpu-box` would collide.
 
-**`description` is the one you can't skip.** ResearchMesh hardcodes a single
-description constant, so every worker describes itself identically — namespacing
-gives them distinct names but nothing to choose between. Write what's true of
-*that* machine: its OS and session type, what's installed, what's attached, what
-data is on it, what it must not be used for. It's prepended to that worker's
-tools as `[worker: name] ...`.
+**`description` is strongly recommended.** ResearchMesh hardcodes a single
+description constant, so every worker describes itself identically unless you
+add your own. Write what's true of *that* machine: its OS and session type,
+what's installed, what's attached, what data is on it, what it must not be
+used for. It's prepended to that worker's tools as `[worker: name] ...` and
+makes routing choices much more reliable.
 
 **`timeout_seconds` matters more than it looks.** The MCP SDK defaults to 300s. A
 worker driving a GUI runs longer than that, and when the timeout fires the work
@@ -156,10 +156,11 @@ is already done on the far side and simply lost. Default here is 900s; raise it
 per worker for long compute. The *connect* timeout stays at 15s, so a machine
 that's switched off fails in seconds instead of hanging the turn.
 
-**`url` can be `https://`, and nothing here needs configuring for it.** httpx2
-verifies against this machine's OS trust store, so a company CA already deployed
-here — or any public certificate — is trusted as-is; `SSL_CERT_FILE=/path/ca.pem`
-overrides that per process. The certificate is the *worker's* side of the job
+**`url` can be `https://`.** The router does not add custom certificate logic; it
+uses the normal HTTP client trust configuration for the runtime. A company CA or
+private certificate therefore works only if that CA is already trusted on the
+client machine, or if `SSL_CERT_FILE=/path/ca.pem` / `SSL_CERT_DIR=/path/to/certs`
+is set for that process. The certificate itself belongs on the *worker* side
 (`mcp_server.py --ssl-certfile/--ssl-keyfile`). Over plain `http://` the bearer
 token and every task and result cross the network in the clear, which is fine on
 a trusted LAN and is not on a corporate one.
