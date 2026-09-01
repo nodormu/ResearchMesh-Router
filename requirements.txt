@@ -50,3 +50,6 @@ duckdb>=0.10             # `sql_query` — SQL over CSV/Parquet/JSON (core/data.
 send2trash>=1.8          # `trash` — recoverable deletes (core/files.py)
 pyautogui>=0.9.54        # `computer` — screen capture + mouse/keyboard (core/computer.py)
 pillow>=10.0             # `computer` — screenshot encode/resize; also pyautogui's backend
+httpx>=0.24              # `text_embeddings` — calls your own embedding server
+                         # (core/text_embeddings.py); already guaranteed by
+                         # `anthropic` above, listed here for a direct import.

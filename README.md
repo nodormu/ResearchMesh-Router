@@ -35,7 +35,7 @@ worker, without babysitting. That is the point — and the risk.
 
 ## What it can do
 
-**18 local tools**, plus one per connected worker:
+**19 local tools**, plus one per connected worker:
 
 | Tool | For |
 |---|---|
@@ -51,6 +51,7 @@ worker, without babysitting. That is the point — and the risk.
 | `config_edit` | Edit YAML/TOML/JSON **without destroying your comments** |
 | `sql_query` | DuckDB straight against CSV/Parquet/JSON — no import step |
 | `trash` | Recoverable deletes instead of `rm` |
+| `text_embeddings` | Vector embeddings from an HTTP embedding server you configure — self-hosted or a paid API both work. See `[embeddings]` in config.toml for worked examples |
 | `<worker>__delegate` | Hand a whole task to a ResearchMesh agent on another machine |
 
 Every machine has its own copy of all this. The `python` kernel here is not a
@@ -63,7 +64,7 @@ You need **Linux**, **Python 3.11+**, and an Anthropic **API key** — this is a
 API client, so a Claude subscription won't work.
 
 **Workers are optional.** `config.toml` ships with every server commented out, so
-a fresh clone runs on the 18 local tools alone.
+a fresh clone runs on the 19 local tools alone.
 
 ```bash
 sudo apt install python3 python3-venv python3-dev build-essential \
@@ -185,6 +186,7 @@ A turn calling three workers takes as long as the slowest one, not the sum.
 | `CLAUDE_SHOW_USAGE=1` | Per-request token and prompt-cache counters. |
 | `CLAUDE_KERNEL_ENCRYPTION` | `auto` (default) encrypts the local `python` kernel's ZeroMQ sockets with CurveZMQ, falling back if the installed versions can't; `required` fails the tool rather than running unencrypted; `off` skips it. Covers *this* machine's kernel only — a worker's kernel reads the variable from the worker's own environment. |
 | *(per worker)* | Each `token_env` names the variable holding that worker's bearer token. No `token_env` means unauthenticated. |
+| *(embeddings server)* | Whatever `[embeddings].api_key_env` names, if your server needs auth. |
 
 Tokens are never stored in `config.toml`, which is committed. Generate one with
 `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
@@ -231,6 +233,7 @@ core/
   local_tools.py  registry — the one place a local tool is wired in
   browser.py  computer.py  kernel.py  memory.py  data.py  documents.py
   processes.py  config_edit.py  files.py  output.py  claude_learned_schemas.py
+  text_embeddings.py
 ```
 
 Adding a **worker** is a config edit, no code. Adding a **local tool** is one

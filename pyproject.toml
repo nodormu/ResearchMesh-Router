@@ -37,6 +37,8 @@ tools = [
     "send2trash>=1.8",        # trash
     "pyautogui>=0.9.54",      # computer
     "pillow>=10.0",
+    "httpx>=0.24",            # text_embeddings — already guaranteed by anthropic,
+                              # listed here for the direct import in core/text_embeddings.py
 ]
 
 # `ruff check .` should come back clean — that is the bar for an edit here, the

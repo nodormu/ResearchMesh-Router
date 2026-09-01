@@ -101,3 +101,53 @@ servers = [
 #    description = "A ResearchMesh worker on this same machine, launched as a subprocess. Shares this filesystem, so it is the one worker that can see the files you are looking at.",
 #    env = { ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY" } },
 ]
+
+[embeddings]
+# There is no Anthropic-hosted embeddings endpoint — the documented path is
+# Voyage AI, a separate paid API. The `text_embeddings` tool exists so Claude
+# has vector embeddings available at all without adding that second bill:
+# uncomment `url` below and it calls whatever HTTP embedding server you
+# already run instead — the same private compute an Unreal Engine project's
+# own embedding settings might already point at, or any self-hosted server
+# speaking the common OpenAI-compatible `/v1/embeddings` shape
+# (text-embeddings-inference, llama.cpp's server, Ollama, vLLM, LM Studio, ...).
+#
+# Like everything else in this file, it's read fresh on every call — editing
+# this block (by hand or with the `config_edit` tool) and calling
+# `text_embeddings` again picks it up with no restart.
+#
+#   url             your embedding server's endpoint. Required — the tool is
+#                   still declared to Claude either way, but returns an error
+#                   telling you to set this until you do.
+#   model           optional model name forwarded in the request body. Most
+#                   single-model private servers ignore it; leave it unset if
+#                   yours does. Overridable per call.
+#   request_format  "openai" (default) posts {"input": [...], "model": ...}
+#                   and expects {"data": [{"embedding": [...]}, ...]} back —
+#                   the shape most self-hosted servers speak. "simple" posts
+#                   {"text": [...]} instead, for a bespoke server that wants
+#                   that shape. Either way, a response of
+#                   {"embedding": [...]} or {"embeddings": [[...]]} is also
+#                   accepted regardless of which format was sent.
+#   api_key_env     optional — name of the environment variable holding a
+#                   bearer token for this server, the same `token_env`
+#                   pattern an `[mcp].servers` entry uses. Never put the
+#                   token itself here; this file is committed.
+#   timeout         optional request timeout in seconds (default 30).
+#
+# Nothing above is specific to self-hosted compute — it's the same generic
+# OpenAI-compatible /v1/embeddings shape, so a paid provider works with zero
+# code changes too. Voyage AI is one example:
+#
+#   url = "https://api.voyageai.com/v1/embeddings"
+#   model = "voyage-2"                  # or voyage-3.5, voyage-large-2, ...
+#   api_key_env = "VOYAGE_API_KEY"      # set VOYAGE_API_KEY in your shell,
+#                                        # never here — this file is committed
+#
+# The example below instead points at a self-hosted server on the LAN — swap
+# in whatever you actually run:
+# url = "http://192.168.2.12:8081/v1/embeddings"
+# model = "nomic-embed-text"
+# request_format = "openai"
+# api_key_env = "EMBEDDINGS_API_KEY"
+# timeout = 30
