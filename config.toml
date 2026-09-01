@@ -146,8 +146,8 @@ servers = [
 #
 # The example below instead points at a self-hosted server on the LAN — swap
 # in whatever you actually run:
-# url = "http://192.168.2.12:8081/v1/embeddings"
-# model = "nomic-embed-text"
+# url = "http://192.168.2.12:8080/v1/embeddings"
+# model = "nomic-embed"
 # request_format = "openai"
 # api_key_env = "EMBEDDINGS_API_KEY"
 # timeout = 30
