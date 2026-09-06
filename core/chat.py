@@ -41,6 +41,17 @@ is the worker the call runs on, and the description opens with `[worker: name]`
 followed by what that machine is for. Read that header before choosing — it is the
 only thing distinguishing two workers that expose identically-named tools.
 
+There is no sandbox or code-execution container behind the local tools above, and
+no `code_execution`, `bash_code_execution`, or `text_editor_code_execution`
+definitions exist among them, whatever training data makes that feel like a gap —
+`bash` and `python` here run as the real user on this real machine, with real
+filesystem and network access, not inside anything separate. The 2026
+`web_search`/`web_fetch` variants filter results using server-side code execution
+internally, which is likely where that instinct comes from, but that machinery
+lives inside those two tools, not as something callable on its own. The same
+absence holds for a worker unless its own tool list says otherwise — check what it
+actually declares rather than assuming a client like this one typically ships one.
+
 Every machine has its own copy of the local capabilities. `python` here is not the
 kernel a worker uses; `browser_navigate` here is not a worker's browser page;
 `/memories` here is not a worker's memory. Same names, different computers, no
