@@ -23,6 +23,7 @@ from core import (
     memory,
     processes,
     text_embeddings,
+    vision,
 )
 from core import claude_learned_schemas as learned
 
@@ -38,6 +39,7 @@ MODULES = [
     data,        # DuckDB
     files,       # trash
     text_embeddings,  # your own private embedding server, config-driven
+    vision,       # your own private vision-capable model, config-driven
 ]
 
 TOOLS = [tool for module in MODULES for tool in module.TOOLS]

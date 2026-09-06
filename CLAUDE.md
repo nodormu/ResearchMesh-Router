@@ -52,16 +52,16 @@ tells you where to be careful.
 |---|---|
 | `core/cli.py` | copied; diverged when `/workers` and `/dagent` were added |
 | `mcp_client.py` | copied, plus `timeout_seconds` |
-| `core/browser.py`, `computer.py`, `config_edit.py`, `data.py`, `documents.py`, `files.py`, `kernel.py`, `memory.py`, `processes.py`, `claude_learned_schemas.py`, `local_tools.py`, `output.py`, `text_embeddings.py` | copied verbatim in the tool merge, unchanged |
+| `core/browser.py`, `computer.py`, `config_edit.py`, `data.py`, `documents.py`, `files.py`, `kernel.py`, `memory.py`, `processes.py`, `claude_learned_schemas.py`, `local_tools.py`, `output.py`, `text_embeddings.py`, `vision.py` | copied verbatim in the tool merge, unchanged |
 | `main.py`, `core/chat.py` | same skeleton; local-tool wiring restored, `SYSTEM_PROMPT` rewritten |
 | `core/claude.py` | same, including the beta endpoint (restored with `computer`) |
 | `core/tools.py` | rebuilt for this project; only the result-formatting helpers survive |
 | `smoke_test.py`, `e2e_test.py`, `e2e_worker.py`, `config.toml` | written here |
 
-The thirteen tool modules are byte-identical copies. Keep them that way — a fix in
+The fourteen tool modules are byte-identical copies. Keep them that way — a fix in
 either repo should be a straight `cp`. `diff -rq ../ResearchMesh/core core`
 currently reports exactly three differing files (`chat.py`, `claude.py`,
-`tools.py`); `cli.py` and all thirteen tool modules match byte for byte, and
+`tools.py`); `cli.py` and all fourteen tool modules match byte for byte, and
 anything else appearing in that list is drift worth explaining.
 
 **One thing to know for the next MCP SDK major.** `mcp_client.py` and
@@ -348,6 +348,18 @@ worker MCP tools**.
   `timeout`. Entirely commented out by default, and read fresh from disk on
   every call rather than cached at import, unlike `[router]`/`[claude].model`
   which `main.py` reads once at startup.
+- **`[vision]` in config.toml** — settings for the `vision_query` tool
+  (`core/vision.py`, copied verbatim from ResearchMesh): `url` (required — the
+  tool errors by name until this is set), `model`, `max_tokens` (default 4000
+  — tuned for a reasoning-capable vision model that can burn a low budget
+  entirely on invisible `reasoning_content` before writing its real answer),
+  `timeout` (default 180), and `api_key_env` (same `token_env`-style
+  indirection as `[embeddings].api_key_env` above). Also entirely commented
+  out by default and read fresh from disk on every call. **No automatic
+  fallback to Claude's own vision lives in this tool** — if the server is
+  unset or unreachable, it returns a `local_unavailable` status and stops;
+  using Claude's own vision on the same image after that is a separate,
+  explicit-consent decision made in conversation, never silent.
 - **TLS to a worker needs nothing here.** An `https://` url just works:
   `create_mcp_http_client` exposes no `verify` parameter to plumb, and none is
   needed, because httpx2 defaults to `truststore.SSLContext` — the OS trust

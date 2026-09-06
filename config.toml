@@ -151,3 +151,64 @@ servers = [
 # request_format = "openai"
 # api_key_env = "EMBEDDINGS_API_KEY"
 # timeout = 30
+
+[vision]
+# Same self-hosting motivation as [embeddings] above, for a different
+# modality: the `vision_query` tool asks a question about an image via your
+# own OpenAI-compatible vision-capable chat server (llama.cpp's server,
+# vLLM, LM Studio, ...) instead of sending the image to Anthropic's API.
+#
+# Like [embeddings], this is read fresh on every call — editing this block
+# and calling `vision_query` again picks it up with no restart.
+#
+# IMPORTANT — no automatic fallback to Claude's own vision lives in this
+# tool. If url is unset here, or the request to it fails (server down,
+# unreachable, etc.), vision_query returns a plain
+# {"status": "local_unavailable", ...} result and stops — it does NOT
+# silently retry via Claude. Using Claude's own vision on the same image
+# after that is a deliberate, separate decision made in conversation (with
+# your explicit go-ahead), never automatic — see core/vision.py's module
+# docstring for the full reasoning.
+#
+#   url          your vision server's OpenAI-compatible chat endpoint,
+#                e.g. http://host:port/v1/chat/completions. Required — the
+#                tool is still declared to Claude either way, but returns
+#                a local_unavailable status telling you to set this until
+#                you do.
+#   model        model name forwarded in the request body — must match
+#                your server's routing/alias name (e.g. a models.ini
+#                bracket name in llama.cpp router mode), not necessarily
+#                the .gguf filename. Overridable per call.
+#   max_tokens   default max output tokens (default 4000 if unset here).
+#                Confirmed empirically necessary at this magnitude for
+#                GLM-4.6V-Flash specifically: it's a reasoning model that
+#                spends part of the budget on invisible reasoning_content
+#                before writing the visible answer — at low values
+#                (tested: 400-500) it can burn the ENTIRE budget on
+#                reasoning and return an empty or mid-sentence-truncated
+#                answer with no error, only a "finish_reason": "length" in
+#                the raw response to tell you why. If you swap in a
+#                non-reasoning vision model later, a much lower value would
+#                likely be fine — this default is tuned for THIS model,
+#                not a universal constant. Overridable per call.
+#   timeout      request timeout in seconds (default 180 if unset here).
+#                Real test data point: max_tokens=4000 on a moderately
+#                complex image used 1536 tokens and took 43s on the
+#                7800 XT this was tuned against (~35.7 tok/s combined
+#                reasoning+generation) — a call that actually used the
+#                FULL 4000-token budget would extrapolate to roughly
+#                110s, so 180s leaves real headroom rather than cutting it
+#                close. Adjust freely if your hardware/model differs.
+#   api_key_env  optional — same bearer-token env-var pattern as
+#                [embeddings].api_key_env. Never put the token itself
+#                here; this file is committed.
+#
+# The example below points at the same self-hosted llama.cpp router
+# [embeddings] above already uses, now also serving a vision-capable model
+# alongside the embedding one (llama.cpp's own router/--models-preset mode
+# runs both behind one port) — swap in whatever you actually run:
+# url = "http://192.168.2.12:8080/v1/chat/completions"
+# model = "glm-4.6v-flash"
+# max_tokens = 4000
+# timeout = 180
+# api_key_env = "VISION_API_KEY"
