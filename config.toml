@@ -28,7 +28,7 @@ timeout_seconds = 900
 [mcp]
 # Set enabled = false to skip every worker. The router has no tools of its own,
 # so with no workers it can only hold a conversation.
-enabled = true
+enabled = false
 
 # The fleet. Every reachable worker connects and its tools are merged into the
 # single list Claude sees; one that fails prints a warning and is skipped, so a
