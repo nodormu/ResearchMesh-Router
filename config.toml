@@ -212,3 +212,86 @@ servers = [
 # max_tokens = 4000
 # timeout = 180
 # api_key_env = "VISION_API_KEY"
+
+[speak]
+# Local text-to-speech via Piper (github.com/rhasspy/piper — the PyPI
+# package is `piper-tts`, NOT `sudo apt install piper`, which installs an
+# unrelated GTK app for configuring gaming mice, same name by coincidence).
+# Same self-hosting motivation as [vision]/[embeddings] above: keeps
+# synthesized speech entirely local, no cloud TTS API involved. Ported from
+# ResearchMesh — see that repo's speak_listen_tool_integration_plan.md and
+# camera_mic_hardware_testing_plan.md (in ITS OWN /memories, not this
+# repo's) for the full build/test history behind this tool.
+#
+# Like everything else in this file, read fresh on every call — editing
+# this block and calling `speak` again picks it up with no restart.
+#
+#   enabled       true/false, default true. A hard off-switch, independent
+#                 of whether voice_model below is actually set up — e.g.
+#                 mute speech output for a while without losing/unsetting
+#                 the voice_model path. Checked BEFORE voice_model, so a
+#                 disabled tool never touches the filesystem or spawns a
+#                 subprocess at all.
+#   voice_model   path to a Piper .onnx voice file. Required — the tool is
+#                 still declared to Claude either way, but returns a
+#                 not_configured status telling you to set this until you
+#                 do. A matching <path>.json config file must sit next to
+#                 it (Piper's own convention, not something we control).
+#   sink          PipeWire sink name to play through (`pactl list sinks
+#                 short` to find it). Falls back to the system default
+#                 sink if unset.
+#   timeout       subprocess timeout in seconds, for synthesis AND playback
+#                 each (default 30 if unset here).
+#
+# ⚠️ FIRST-TIME SETUP: don't hand-guess `voice_model`/`sink` below — leave
+# `enabled = false` (or this whole block commented, as shipped) for now,
+# start a normal CLI session, and just ask Claude directly — e.g. "list my
+# PipeWire sinks and fill in [speak] in config.toml for me." Claude already
+# has full bash access and can run `pactl list sinks short`, confirm which
+# one is your target speaker/headset, and edit this file's values (via the
+# config_edit tool, so these comments survive) — then flip `enabled` to
+# true yourself once it's filled in correctly. The example below is the
+# machine ResearchMesh itself was built/tested on (a "Razer USB Sound
+# Card") — illustrative only, not this repo's own hardware.
+# enabled = true
+# voice_model = "/home/invent/models/piper_voices/en_US-lessac-medium.onnx"
+# sink = "alsa_output.usb-Razer_Razer_USB_Sound_Card_00000000-00.analog-stereo"
+# timeout = 120
+
+[listen]
+# Local speech-to-text via faster-whisper (CTranslate2, CPU-only —
+# faster-whisper's CTranslate2 backend has no GPU path on this project's
+# reference hardware regardless of ROCm/ CUDA availability elsewhere; see
+# ResearchMesh's camera_mic_hardware_testing_plan.md for why). Same
+# self-hosting motivation as [speak]/[vision]/[embeddings] above.
+#
+#   enabled       true/false. Same hard off-switch shape as [speak].enabled,
+#                 checked before `device`, so a disabled tool never opens
+#                 the microphone at all.
+#   device        PipeWire source name to record from (`pactl list sources
+#                 short` to find it). Required — the tool is still declared
+#                 to Claude either way, but returns a not_configured status
+#                 until this is set.
+#   model_size    faster-whisper model size (tiny/base/small/medium/
+#                 large-v3, ...). Default "base" if unset — proven on
+#                 ResearchMesh to correctly transcribe real, natural speech
+#                 on CPU alone.
+#   default_duration_seconds   how long to record if the caller doesn't
+#                 specify duration_seconds (default 8 if unset here).
+#   max_duration_seconds   safety cap on duration_seconds however it was
+#                 supplied (default 30 if unset here).
+#
+# ⚠️ FIRST-TIME SETUP: same advice as [speak] above — don't hand-guess
+# `device` below, leave `enabled = false` (or this whole block commented,
+# as shipped) for now, start a normal CLI session, and ask Claude directly
+# — e.g. "list my PipeWire sources and fill in [listen] in config.toml for
+# me." Claude can run `pactl list sources short`, confirm which one is your
+# target mic/headset, and edit this file's values (via config_edit) — then
+# flip `enabled` to true yourself once it's filled in correctly. The
+# example below is illustrative only, from the same reference machine as
+# [speak] above, not this repo's own hardware.
+# enabled = true
+# device = "alsa_input.usb-Razer_Razer_USB_Sound_Card_00000000-00.analog-stereo"
+# model_size = "base"
+# default_duration_seconds = 8
+# max_duration_seconds = 30

@@ -50,19 +50,23 @@ tells you where to be careful.
 
 | File | Where it came from |
 |---|---|
-| `core/cli.py` | copied; diverged when `/workers` and `/dagent` were added |
+| `core/cli.py` | copied; diverged when `/workers`/`/dagent` were added, and again when `/voice`/`/listen` were ported over from ResearchMesh |
 | `mcp_client.py` | copied, plus `timeout_seconds` |
-| `core/browser.py`, `computer.py`, `config_edit.py`, `data.py`, `documents.py`, `files.py`, `kernel.py`, `memory.py`, `processes.py`, `claude_learned_schemas.py`, `local_tools.py`, `output.py`, `text_embeddings.py`, `vision.py` | copied verbatim in the tool merge, unchanged |
+| `core/browser.py`, `computer.py`, `config_edit.py`, `data.py`, `documents.py`, `files.py`, `kernel.py`, `listen.py`, `memory.py`, `processes.py`, `speak.py`, `claude_learned_schemas.py`, `local_tools.py`, `output.py`, `text_embeddings.py`, `vision.py` | copied verbatim in the tool merge, unchanged |
 | `main.py`, `core/chat.py` | same skeleton; local-tool wiring restored, `SYSTEM_PROMPT` rewritten |
 | `core/claude.py` | same, including the beta endpoint (restored with `computer`) |
 | `core/tools.py` | rebuilt for this project; only the result-formatting helpers survive |
 | `smoke_test.py`, `e2e_test.py`, `e2e_worker.py`, `config.toml` | written here |
 
-The fourteen tool modules are byte-identical copies. Keep them that way — a fix in
-either repo should be a straight `cp`. `diff -rq ../ResearchMesh/core core`
-currently reports exactly three differing files (`chat.py`, `claude.py`,
-`tools.py`); `cli.py` and all fourteen tool modules match byte for byte, and
-anything else appearing in that list is drift worth explaining.
+The sixteen tool modules are byte-identical copies. Keep them that way — a fix in
+either repo should be a straight `cp`. `diff -rq --exclude=__pycache__
+../ResearchMesh/core core` currently reports exactly four differing files
+(`chat.py`, `claude.py`, `cli.py`, `tools.py`); all sixteen tool modules match
+byte for byte, and anything else appearing in that list is drift worth
+explaining. **`cli.py` is expected to differ, not a regression** — see its own
+Architecture bullet below for exactly what it carries beyond ResearchMesh's copy
+(`/workers`/`/dagent`, genuinely router-specific; `/voice`/`/listen`, ported
+over and behaviorally identical to ResearchMesh's own).
 
 **One thing to know for the next MCP SDK major.** `mcp_client.py` and
 `core/tools.py` are the two files that broke on mcp 1.x → 2.x: the transport
@@ -73,10 +77,13 @@ inherited the already-fixed versions — but it identifies where an mcp 3.0 woul
 land, and it would land in ResearchMesh too.
 
 If that happens, the two are still trivially comparable despite the separate
-histories: `core/cli.py` is byte-identical to its counterpart, and
-`mcp_client.py` diverges by about nine lines of real code (the `timeout_seconds`
-parameter and its two uses). `diff -u ../ResearchMesh/mcp_client.py
-mcp_client.py` shows the whole of it. Shared ancestry would only have added
+histories: the sixteen tool modules (see the table above) stay byte-identical
+copies by convention, and `mcp_client.py` diverges by about nine lines of real
+code (the `timeout_seconds` parameter and its two uses). `diff -u
+../ResearchMesh/mcp_client.py mcp_client.py` shows the whole of it. `core/cli.py`
+is the one file that's *expected* to diverge (router-specific commands layered
+on top of a ported base — see its own Architecture bullet), so it is not part of
+this "should be comparable" set. Shared ancestry would only have added
 `git cherry-pick` as a convenience.
 
 `mypy .` is what will tell you a break has happened at all, since it checks
@@ -268,9 +275,21 @@ worker MCP tools**.
   was a `timedelta` in 1.x. Connect stays at 15s deliberately, so an
   switched-off machine fails fast instead of hanging the turn.
 
-- **`core/cli.py`** — was verbatim from ResearchMesh; now carries the
-  router-specific commands, which is the only reason it diverged. (`/clear` was
-  added to both repos and is not a divergence.)
+- **`core/cli.py`** — was verbatim from ResearchMesh; now carries two kinds of
+  addition. `/workers` and `/dagent` are genuinely router-specific — the only
+  actual divergence in *behavior* from ResearchMesh's own `cli.py`. `/voice` and
+  `/listen`, by contrast, are a straight port: same `core/speak.py`/
+  `core/listen.py` modules (byte-identical, per the table above), same
+  `_submit()` refactor, same auto-submit-on-dictation design — the only change
+  from ResearchMesh's version is threading `remote_only`/`worker` through
+  `_submit()` so a dictated turn still respects whatever `/dagent` state, if
+  any, was in effect (in practice: never, since a dictated turn is always a
+  plain new turn — you can't speak a `/dagent` prefix and a task in the same
+  breath). See ResearchMesh's own `speak_listen_tool_integration_plan.md` (in
+  *its* `/memories`, not this repo's) for the full design history and live-test
+  log behind `/voice`/`/listen`; nothing here differs from what's documented
+  there. (`/clear` was added to both repos independently and is not a
+  divergence either.)
 
   - **`/clear`** (also `/reset`) — empties `self.messages`, keeps the fleet
     connected. This is the recovery path from the two failures that *persist*:
@@ -307,6 +326,27 @@ worker MCP tools**.
     the model answers from thin air — the exact outcome the command exists to
     rule out. That path pops the user message back off `self.messages` so an
     aborted turn leaves no trace.
+
+  - **`/voice [on|off]`** — toggles `self.auto_speak` (default off), which
+    gates only whether MY reply also gets spoken aloud via `speak.py`'s own
+    `_run` helper after a turn completes. It has zero bearing on whether
+    `speak`/`listen` are reachable as Claude-invoked tools at all (that's
+    `config.toml`'s own `[speak].enabled`/`[listen].enabled`), and zero bearing
+    on whether a `/listen` dictation gets submitted — those two concerns are
+    deliberately decoupled.
+  - **`/listen [N]`** — records `N` seconds from the configured mic (or
+    `[listen].default_duration_seconds` if omitted), transcribes locally via
+    `listen.py`'s own `_run` (faster-whisper), then **auto-submits the
+    transcript as a turn the instant transcription completes** — via the same
+    shared `_submit()` method a normal typed Enter-submit uses, so this fires
+    identically whether `/voice` is on or off. This is a deliberate pivot away
+    from an earlier "stage the transcript as the next prompt's editable
+    pre-fill, review before pressing Enter" design (ResearchMesh's own history,
+    inherited here unchanged) — a garbled transcript now gets sent as-is, with
+    no edit step, a known and accepted tradeoff. A bad `/listen abc` (non-integer
+    duration) reports an error and submits nothing; `[listen].enabled = false`
+    (or unset `device`) reports `disabled`/`not_configured` and never opens the
+    microphone.
 
 ## Runtime configuration
 
@@ -360,6 +400,28 @@ worker MCP tools**.
   unset or unreachable, it returns a `local_unavailable` status and stops;
   using Claude's own vision on the same image after that is a separate,
   explicit-consent decision made in conversation, never silent.
+- **`[speak]` in config.toml** — settings for the `speak` tool (`core/speak.py`,
+  copied verbatim from ResearchMesh): `enabled` (true/false, default true — a
+  hard off-switch checked *before* `voice_model`, independent of whether a
+  voice model is actually set up), `voice_model` (path to a Piper `.onnx` file;
+  required, needs a matching `<path>.json` sidecar), `sink` (PipeWire sink name,
+  falls back to the system default if unset), and `timeout` (subprocess
+  timeout for synthesis AND playback each, default 30). Entirely commented out
+  by default (this repo ships unconfigured, unlike ResearchMesh's own
+  `config.toml`, which currently carries live hardware values as an explicitly
+  flagged testing-state exception — see that repo's own inline comment). Read
+  fresh from disk on every call. **⚠️ Requires the PyPI package `piper-tts`,
+  NOT `sudo apt install piper`** — the apt package is an unrelated GTK app for
+  configuring gaming mice, same name by coincidence.
+- **`[listen]` in config.toml** — settings for the `listen` tool
+  (`core/listen.py`, copied verbatim from ResearchMesh): `enabled` (same hard
+  off-switch shape as `[speak].enabled`, checked before `device`), `device`
+  (PipeWire source name to record from, `pactl list sources short` to find it;
+  required), `model_size` (faster-whisper model size — `tiny`/`base`/`small`/
+  `medium`/`large-v3`; default `"base"`), `default_duration_seconds` (default
+  8), and `max_duration_seconds` (safety cap regardless of what was requested;
+  default 30). Entirely commented out by default, same as `[speak]` above.
+  Read fresh from disk on every call.
 - **TLS to a worker needs nothing here.** An `https://` url just works:
   `create_mcp_http_client` exposes no `verify` parameter to plumb, and none is
   needed, because httpx2 defaults to `truststore.SSLContext` — the OS trust

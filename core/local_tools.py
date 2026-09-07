@@ -20,8 +20,10 @@ from core import (
     documents,
     files,
     kernel,
+    listen,
     memory,
     processes,
+    speak,
     text_embeddings,
     vision,
 )
@@ -40,6 +42,8 @@ MODULES = [
     files,       # trash
     text_embeddings,  # your own private embedding server, config-driven
     vision,       # your own private vision-capable model, config-driven
+    speak,        # local text-to-speech via Piper, config-driven
+    listen,       # local speech-to-text via faster-whisper, config-driven
 ]
 
 TOOLS = [tool for module in MODULES for tool in module.TOOLS]

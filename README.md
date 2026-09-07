@@ -35,7 +35,7 @@ worker, without babysitting. That is the point — and the risk.
 
 ## What it can do
 
-**20 local tools**, plus one per connected worker:
+**22 local tools**, plus one per connected worker:
 
 | Tool | For |
 |---|---|
@@ -53,6 +53,7 @@ worker, without babysitting. That is the point — and the risk.
 | `trash` | Recoverable deletes instead of `rm` |
 | `text_embeddings` | Vector embeddings from an HTTP embedding server you configure — self-hosted or a paid API both work. See `[embeddings]` in config.toml for worked examples |
 | `vision_query` | Ask a question about an image via your own vision-capable chat server, instead of sending it to Anthropic's API. See `[vision]` in config.toml for worked examples |
+| `speak` · `listen` | Local text-to-speech (Piper) and speech-to-text (faster-whisper) through your own speaker/mic — no cloud audio API. Disabled by default; see `[speak]`/`[listen]` in config.toml, including first-time device setup |
 | `<worker>__delegate` | Hand a whole task to a ResearchMesh agent on another machine |
 
 Every machine has its own copy of all this. The `python` kernel here is not a
@@ -65,7 +66,7 @@ You need **Linux**, **Python 3.11+**, and an Anthropic **API key** — this is a
 API client, so a Claude subscription won't work.
 
 **Workers are optional.** `config.toml` ships with every server commented out, so
-a fresh clone runs on the 20 local tools alone.
+a fresh clone runs on the 22 local tools alone.
 
 ```bash
 sudo apt install python3 python3-venv python3-dev build-essential \
@@ -94,6 +95,14 @@ Then just type. At the `>` prompt:
 | `/dagent <worker> <task>` | the same, pinned to one machine |
 | `/think <anything>` | give Claude longer to reason |
 | `/clear` | drop the conversation, keep the workers connected |
+| `/voice [on\|off]` | toggle whether Claude's replies also get spoken aloud (`speak`, local Piper TTS) |
+| `/listen [N]` | record `N` seconds from your mic (or `[listen].default_duration_seconds`), transcribe locally (faster-whisper), and auto-submit it as your next turn — no Enter press needed, works the same whether `/voice` is on or off |
+
+`/voice`/`/listen` require `[speak]`/`[listen]` set up in `config.toml` first (see
+the tools table above and that file's own inline setup comments) — both are
+shipped fully commented out, same as `[vision]`/`[embeddings]`. Without that,
+`/voice` still toggles but has nothing to speak, and `/listen` reports a clear
+`not_configured`/`disabled` message instead of trying to open the mic.
 
 **Ctrl-C** exits and shuts everything down cleanly.
 
@@ -235,7 +244,7 @@ core/
   local_tools.py  registry — the one place a local tool is wired in
   browser.py  computer.py  kernel.py  memory.py  data.py  documents.py
   processes.py  config_edit.py  files.py  output.py  claude_learned_schemas.py
-  text_embeddings.py  vision.py
+  text_embeddings.py  vision.py  speak.py  listen.py
 ```
 
 Adding a **worker** is a config edit, no code. Adding a **local tool** is one
@@ -246,9 +255,10 @@ module exposing `TOOLS` / `handles()` / `execute()`, plus a line in
 
 The CLI shell, Anthropic wrapper and MCP client began as copies from
 [ResearchMesh](https://github.com/nodormu/ResearchMesh) (same author, MIT); the
-twelve tool modules were copied later, verbatim. `diff -rq ../ResearchMesh/core
-core` should show only `chat.py`, `claude.py`, `tools.py` and `cli.py` — anything
-else is drift. A fix to a tool in either repo should be a straight `cp`.
+sixteen tool modules were copied later, verbatim. `diff -rq --exclude=__pycache__
+../ResearchMesh/core core` should show only `chat.py`, `claude.py`, `tools.py` and
+`cli.py` — anything else is drift. A fix to a tool in either repo should be a
+straight `cp`.
 
 It exists because a plain MCP bridge passes tool names through verbatim, so three
 ResearchMesh workers all advertising `delegate` get rejected outright
