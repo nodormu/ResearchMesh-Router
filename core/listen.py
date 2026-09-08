@@ -188,6 +188,7 @@ def _run(tool_input: dict) -> str:
             capture_output=True,
             text=True,
             timeout=duration + 5,
+            check=False,
         )
         if capture.returncode not in (0, 124):
             return json.dumps(

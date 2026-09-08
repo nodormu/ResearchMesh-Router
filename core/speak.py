@@ -172,6 +172,7 @@ def _run(tool_input: dict) -> str:
             capture_output=True,
             text=True,
             timeout=timeout,
+            check=False,
         )
         if synth.returncode != 0:
             return json.dumps(
@@ -190,7 +191,7 @@ def _run(tool_input: dict) -> str:
         play_cmd.append(wav_path)
 
         playback = subprocess.run(
-            play_cmd, capture_output=True, text=True, timeout=timeout
+            play_cmd, capture_output=True, text=True, timeout=timeout, check=False
         )
         if playback.returncode != 0:
             return json.dumps(
