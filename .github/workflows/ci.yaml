@@ -6,10 +6,15 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   gates:
@@ -18,8 +23,10 @@ jobs:
       fail-fast: false
       matrix:
         # 3.11 is the floor (tomllib in main.py). 3.14 is what this is developed
-        # on. The newest matters because mypy checks against the *installed*
-        # packages, so a dependency that changes shape surfaces there first.
+        # on, and the newest matters because mypy checks against the
+        # *installed* packages, so a dependency that changes shape surfaces
+        # there first. 3.13 sits in the middle as a third data point rather
+        # than only ever testing the two ends of the supported range.
         python-version: ["3.11", "3.13", "3.14"]
 
     steps:
@@ -74,3 +81,46 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+  # Guards the one thing about this repo that is genuinely easy to get wrong
+  # and impossible to notice: a real secret committed to a public repo. Pure
+  # text scanning via `git grep` — same job ResearchMesh/ResearchMesh-Mac
+  # both run, adapted here for the fact this repo has no `.mcp.json`: every
+  # secret-shaped setting (`token_env`, `api_key_env`, and the `env = {...}`
+  # inline table `_connect_mcp_servers` reads for a stdio worker's own
+  # subprocess environment) lives in `config.toml` instead, so the checks
+  # below are TOML-flavored rather than JSON-flavored.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No literal credentials in tracked files
+        run: |
+          set -euo pipefail
+          # Anthropic keys, wherever they might appear — this one needs no
+          # TOML/JSON adaptation, it just greps every tracked file.
+          if git grep -nIE 'sk-ant-[A-Za-z0-9_-]{20,}' -- . ; then
+            echo "::error::An Anthropic API key appears to be committed."
+            exit 1
+          fi
+          # `token_env`/`api_key_env` are meant to hold the NAME of an
+          # environment variable (e.g. "GPU_BOX_MCP_TOKEN"), never a secret
+          # value itself — see config.toml's own comments. A real token
+          # pasted in by mistake will contain a lowercase letter somewhere
+          # (env-var-name convention here is ALL_CAPS_WITH_UNDERSCORES), so
+          # that's the signal this checks for, restricted to config.toml's
+          # own TOML syntax.
+          if git grep -nIE '\b(token_env|api_key_env)\s*=\s*"[^"]*[a-z][^"]*"' -- '*.toml' ; then
+            echo "::error::token_env/api_key_env should name an ALL_CAPS environment variable, not a literal value."
+            exit 1
+          fi
+          # The `env = { ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY" }` inline
+          # table (config.toml's stdio-worker example) is meant to carry a
+          # shell expansion, never a literal — this is the TOML equivalent
+          # of the JSON check the sibling repos run against `.mcp.json`'s
+          # own `env` blocks.
+          if git grep -nIE '\benv\s*=\s*\{[^}]*(ANTHROPIC_API_KEY|_TOKEN)\s*=\s*"[^$"][^"]*"' -- '*.toml' ; then
+            echo "::error::A literal secret appears to be committed in an inline env table; use \"\$VAR\" instead."
+            exit 1
+          fi
+          echo "no committed credentials found"
