@@ -264,7 +264,17 @@ ImageMagick — instead of just having you write a one-off script from scratch e
 time I ask for something similar. What's actually being saved by doing this?
 ```
 
-c) **Mouse/keyboard GUI control.**
+c) **Install the recommended tools, one at a time.**
+```
+Look at the "Recommended local tools" section further down in this project's
+README.md, and install every tool listed there via apt/snap/flatpak/rustup — one at
+a time. Wait for each install to fully finish and tell me whether it succeeded or
+failed before starting the next one. Don't batch them together.
+```
+NOTE: this only installs on this machine, the router itself — repeat it separately
+on each worker if you want the same tools available there too.
+
+d) **Mouse/keyboard GUI control.**
 ```
 Open a text editor (gedit, kate, or whatever opens by default), type "Hello, I am
 controlling your mouse and keyboard," save it to my Desktop, then export that same
@@ -274,7 +284,7 @@ TIP: don't touch your own mouse and keyboard while it's doing this — fighting 
 control just makes it harder for the AI. Needs an X11 session — see step 3 above if
 you're on Wayland.
 
-d) **Headless, DOM-based web browsing.**
+e) **Headless, DOM-based web browsing.**
 ```
 Go to news.ycombinator.com using DOM-based browsing — not a visible browser window —
 open the #1 story on the front page, and give me a short summary of it.
@@ -282,13 +292,13 @@ open the #1 story on the front page, and give me a short summary of it.
 NOTE: this is an example of it reading and surfing the web without ever opening a
 visible browser window or touching your mouse/keyboard.
 
-e) **Write a document, then convert it.**
+f) **Write a document, then convert it.**
 ```
 Write a short one-page markdown file about the history of the QWERTY keyboard layout,
 then convert it to a PDF and save both the markdown and the PDF to my Desktop.
 ```
 
-f) What is the airspeed velocity of an unladen swallow?
+g) What is the airspeed velocity of an unladen swallow?
 
 All of the above run entirely on this machine — none of it needs a worker configured.
 Once you've added one (see [Adding workers](#adding-workers) below), `/workers` and
