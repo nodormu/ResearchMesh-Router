@@ -201,6 +201,73 @@ def check_namespacing() -> None:
     )
 
 
+def check_namespacing_edge_cases() -> None:
+    """The two `_legalise()` responsibilities `check_namespacing` never triggers.
+
+    That check's own two workers happen not to collide after sanitising and
+    stay well under the 128-char API limit — so neither disambiguation nor
+    hash-truncation, both explicitly named in CLAUDE.md as reasons this
+    function exists, is exercised anywhere else. A regression in either would
+    pass every other check in this file.
+    """
+    print("namespacing edge cases")
+    from core.tools import ToolManager
+
+    # "gpu box" and "gpu.box" both sanitise to "gpu_box" — space and period
+    # are both illegal characters substituted with the same "_". (README's own
+    # "gpu box and gpu-box would collide" example does NOT actually collide —
+    # hyphen is already API-legal per _ILLEGAL's own pattern and is never
+    # substituted at all; verified live, flagged as a separate doc fix.)
+    # Without disambiguation, one worker's tool would silently shadow the
+    # other's.
+    colliding = {
+        "gpu box": FakeWorker(["delegate"]),
+        "gpu.box": FakeWorker(["delegate"]),
+    }
+    index = asyncio.run(ToolManager.build(colliding, {}))
+    names = [t["name"] for t in index.tool_defs]
+    check(
+        "colliding sanitised names still end up unique",
+        len(names) == len(set(names)) == 2,
+        f"got {names}",
+    )
+    check(
+        "both colliding workers are still independently resolvable",
+        all(index.resolve(n) is not None for n in names),
+        f"got {names}",
+    )
+
+    # A worker id long enough that "id__delegate" exceeds the 128-char API
+    # limit forces the hash-truncation path in `_legalise()`, not just the
+    # character-substitution one `check_namespacing` already covers.
+    long_id = "x" * 150
+    long_index = asyncio.run(ToolManager.build({long_id: FakeWorker(["delegate"])}, {}))
+    long_names = [t["name"] for t in long_index.tool_defs]
+    check(
+        "a very long worker name is truncated, not silently over the API limit",
+        all(len(n) <= 128 for n in long_names),
+        f"lengths: {[len(n) for n in long_names]}",
+    )
+    check(
+        "the truncated name is still API-legal",
+        all(TOOL_NAME_RE.match(n) for n in long_names),
+        f"got {long_names}",
+    )
+
+    # Truncation must be deterministic — a name that changed between requests
+    # would silently cost the prompt-cache hit every turn (CLAUDE.md's own
+    # stated reason `_digest()` hashes rather than counts).
+    long_index_2 = asyncio.run(
+        ToolManager.build({long_id: FakeWorker(["delegate"])}, {})
+    )
+    long_names_2 = [t["name"] for t in long_index_2.tool_defs]
+    check(
+        "truncation is deterministic across separate builds",
+        long_names == long_names_2,
+        f"{long_names} != {long_names_2}",
+    )
+
+
 def check_dead_worker_skipped() -> None:
     print("dead worker")
     from core.tools import ToolManager
@@ -515,6 +582,7 @@ def main() -> int:
         check_compiles,
         check_imports,
         check_namespacing,
+        check_namespacing_edge_cases,
         check_dead_worker_skipped,
         check_fanout_and_results,
         check_local_tools,
