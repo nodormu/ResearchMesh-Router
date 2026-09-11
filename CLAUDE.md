@@ -132,9 +132,9 @@ python smoke_test.py
 ```
 
 `smoke_test.py` needs no API key, no network and no running workers — it builds a
-fleet of fakes. It is *not* a port of ResearchMesh's smoke test: there is no tool
-registry to validate and no `mcp_server.py` to handshake with, so it checks a
-different set of invariants (see "What the smoke test guards" below).
+fleet of fakes. It is *not* a port of ResearchMesh's smoke test: there is no local
+tool registry to validate here, so it checks a different set of invariants (see
+"What the smoke test guards" below).
 
 A fourth check exists but is **not** one of the gates, because it spends real
 tokens:
@@ -455,8 +455,8 @@ worker MCP tools**.
 
 ## What the smoke test guards
 
-Not a port of ResearchMesh's. There is no local tool registry and no
-`mcp_server.py`, so the checks are:
+Not a port of ResearchMesh's. There is no local tool registry here, so the
+checks are:
 
 1. everything imports and byte-compiles;
 2. two workers exposing the same tool name yield two distinct, API-legal names —
@@ -508,11 +508,5 @@ no ten-place checklist here.
 
 ## Deliberately not built
 
-- **The router exposes no `delegate` tool of its own, permanently — that's out
-  of scope, not a gap.** It cannot be driven as a single endpoint by Claude Code
-  or by another router, and being one worker in someone else's fleet is not a
-  planned feature. If that ever changes, porting ResearchMesh's `mcp_server.py`
-  would mostly work; its hard part (the file-descriptor-level stdout guard)
-  applies unchanged.
 - No recursion or loop protection for a worker configured to point back here —
   open question, not yet resolved.
