@@ -36,6 +36,40 @@ approval prompts, no permission model, no context compaction. It runs any
 program, command or script your user can run, on this machine and on every
 worker, without babysitting. That is the point — and the risk.
 
+**This is meant to be a fleet of AI *employees*, not just unsupervised agents.** The
+per-worker OS restrictions below are the last line of defense, but the fuller model
+goes further: give each one its own email address, let it talk to humans and other
+AIs in Teams or Slack like any other coworker, and route its actual work through the
+same systems everyone else's work goes through — a CRM/CMDB (ServiceNow, ConnectWise,
+whatever the organization already runs) as its system of record, change tickets
+opened for anything that touches production. Those are examples, not a fixed list.
+None of that is built into this app's 22 tools directly; it's what
+[Adding workers](#adding-workers) is *for* — connect a worker to an email MCP server,
+a Teams/Slack one, your CMDB's — and it participates the same way a new hire would,
+through the same front doors, not a side channel. That reframes what "no approval
+gating" actually means: no y/n dialog *in this software*, not that nothing ever gates
+a risky change — a maintenance request can be drafted and submitted instantly, but
+whether it actually *runs* still depends on the same Change Advisory Board approval a
+human's request would need, because that gate lives in the change-management
+process, not in this client.
+
+**Treat each worker like a differently-scoped employee, not one all-access account.**
+There's no approval gating anywhere in this fleet — locally, or on any worker the
+router calls. The mitigation isn't a permission prompt; it's giving each machine only
+the OS-level access its actual job requires (dedicated non-admin account, file/
+directory permissions, GPOs/Configuration Profiles — see
+[ResearchMesh](https://github.com/nodormu/ResearchMesh)'s own README for the concrete
+Linux/Windows/Mac mechanisms), exactly like a company issuing role-scoped laptops
+instead of one shared admin account.
+
+This is what turns a misrouted or hallucinated request harmless instead of dangerous:
+if the router asks a "Graphic Designer" worker to modify a production database, and
+that box's own account genuinely has no access to the database, the request simply
+fails at the OS layer — the same way an actual employee without database credentials
+can't touch one, no matter what they're asked or tricked into trying. Scope every
+worker's account to match its own `description` in `config.toml`, not to whatever's
+convenient to set up.
+
 ## What it can do
 
 **22 local tools**, plus one per connected worker:
