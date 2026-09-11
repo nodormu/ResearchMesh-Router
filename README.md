@@ -226,6 +226,74 @@ message instead of trying to open the mic.
 
 **Ctrl-C** exits and shuts everything down cleanly.
 
+### 7) Test it
+
+Each of these is meant to be copy/pasted as-is directly into the CLI assistant.
+
+a) **Build your own persistent memory of this machine — do this one first, always.**
+```
+Before we do anything else, I want you to build yourself some persistent memory about
+this machine, since /memories is the only state that survives a session reset or a
+restart — everything else (the Python kernel, the browser page, the DuckDB connection)
+resets every time. Figure out what Linux distro and version this actually is first
+(don't assume — check `/etc/os-release`, `uname -a`, etc.), then scan this machine's
+real hardware (CPU, RAM, GPU, disks) and what's actually installed: CLI tools on PATH
+via `command -v`, packages via whichever package manager this distro actually uses
+(`dpkg`/`apt` on Debian/Ubuntu, `rpm`/`dnf` on Fedora, `pacman` on Arch, `zypper` on
+openSUSE, etc. — check which one applies here rather than guessing), plus snap/flatpak
+if either is present. Then write two files: 01_environment_notes.md (hardware specs,
+the distro/OS version you actually found, disk layout, and any quirks or behaviors you
+run into along the way — display server, privilege model, which package manager(s) are
+in play) and 01_system_tool_inventory.md (a categorized inventory of what's already
+installed — GUI apps, CLI tools, dev-assistant tools, reusable scripts you find lying
+around — so you reach for a real local tool instead of writing something from scratch
+every time). In both files, add a short instruction near the top telling your future
+self to re-scan and refresh the file's contents the next time you're asked to read them,
+rather than trusting old data blindly — so this stays accurate as things change on this
+machine over time.
+```
+NOTE: this is the single most useful prompt on this list. Do it once, and every future
+session starts already knowing your machine instead of re-discovering it from scratch.
+This is this machine's own memory — a worker you add later builds its own separately.
+
+b) **Understand why any of this is worth doing.**
+```
+Now that you've looked at what's installed on my machine, explain in plain terms why
+it's worth installing extra local command-line tools — like ripgrep, fd, jq, ffmpeg,
+ImageMagick — instead of just having you write a one-off script from scratch every
+time I ask for something similar. What's actually being saved by doing this?
+```
+
+c) **Mouse/keyboard GUI control.**
+```
+Open a text editor (gedit, kate, or whatever opens by default), type "Hello, I am
+controlling your mouse and keyboard," save it to my Desktop, then export that same
+file as a PDF, also saved to my Desktop.
+```
+TIP: don't touch your own mouse and keyboard while it's doing this — fighting it for
+control just makes it harder for the AI. Needs an X11 session — see step 3 above if
+you're on Wayland.
+
+d) **Headless, DOM-based web browsing.**
+```
+Go to news.ycombinator.com using DOM-based browsing — not a visible browser window —
+open the #1 story on the front page, and give me a short summary of it.
+```
+NOTE: this is an example of it reading and surfing the web without ever opening a
+visible browser window or touching your mouse/keyboard.
+
+e) **Write a document, then convert it.**
+```
+Write a short one-page markdown file about the history of the QWERTY keyboard layout,
+then convert it to a PDF and save both the markdown and the PDF to my Desktop.
+```
+
+f) What is the airspeed velocity of an unladen swallow?
+
+All of the above run entirely on this machine — none of it needs a worker configured.
+Once you've added one (see [Adding workers](#adding-workers) below), `/workers` and
+`/dagent` are the natural next things to try.
+
 ## Configuration
 
 Non-secret settings live in `config.toml`. Secrets stay in the environment — the app
