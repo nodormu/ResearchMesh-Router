@@ -60,13 +60,17 @@ tells you where to be careful.
 
 The sixteen tool modules are byte-identical copies. Keep them that way — a fix in
 either repo should be a straight `cp`. `diff -rq --exclude=__pycache__
-../ResearchMesh/core core` currently reports exactly four differing files
-(`chat.py`, `claude.py`, `cli.py`, `tools.py`); all sixteen tool modules match
-byte for byte, and anything else appearing in that list is drift worth
-explaining. **`cli.py` is expected to differ, not a regression** — see its own
-Architecture bullet below for exactly what it carries beyond ResearchMesh's copy
-(`/workers`/`/dagent`, genuinely router-specific; `/voice`/`/listen`, ported
-over and behaviorally identical to ResearchMesh's own).
+../ResearchMesh/core core` currently reports five differing files (`chat.py`,
+`claude.py`, `cli.py`, `local_tools.py`, `tools.py`) plus one file only on the
+ResearchMesh side (`midi1.py` — this repo has no MIDI tool); all sixteen tool
+modules match byte for byte, and anything else appearing in that list is drift
+worth explaining. **`cli.py` is expected to differ, not a regression** — see its
+own Architecture bullet below for exactly what it carries beyond ResearchMesh's
+copy (`/workers`/`/dagent`, genuinely router-specific; `/voice`/`/listen`, ported
+over and behaviorally identical to ResearchMesh's own). **`local_tools.py` is
+expected to differ too** — its `MODULES` list correctly has no `midi1` entry,
+since this repo carries no MIDI tool; re-run the `diff` above rather than
+trusting this file count if the tool set on either side ever changes.
 
 **One thing to know for the next MCP SDK major.** `mcp_client.py` and
 `core/tools.py` are the two files that broke on mcp 1.x → 2.x: the transport
@@ -100,6 +104,18 @@ python main.py
 Requires `ANTHROPIC_API_KEY` in the shell (no `.env` is loaded), plus one
 environment variable per authenticated worker, named by that worker's
 `token_env` in `config.toml`.
+
+```bash
+pip install -r requirements.txt
+playwright install chromium   # pip installs the package, not the browser itself
+```
+
+**Full install walkthrough (apt packages, the `computer` tool's X11/Wayland
+requirement, LibreOffice/Pandoc) lives in `README.md`'s "Setup (Linux)"
+section.** Don't re-derive that walkthrough here — the two commands above are
+what get a working dev environment; the rest there is one-time OS-level setup.
+This repo needs the exact same backings as ResearchMesh's own local tools,
+since the merge brought them in verbatim (see Origin above).
 
 Check every configured worker standalone (connect, list tools, report failures):
 
@@ -492,9 +508,11 @@ no ten-place checklist here.
 
 ## Deliberately not built
 
-- The router exposes no `delegate` tool of its own, so it cannot yet be driven as
-  a single endpoint by Claude Code or by another router. Porting ResearchMesh's
-  `mcp_server.py` would mostly work; its hard part (the file-descriptor-level
-  stdout guard) applies unchanged.
-- No reconnection: a worker that dies is skipped each turn until restart.
-- No recursion or loop protection for a worker configured to point back here.
+- **The router exposes no `delegate` tool of its own, permanently — that's out
+  of scope, not a gap.** It cannot be driven as a single endpoint by Claude Code
+  or by another router, and being one worker in someone else's fleet is not a
+  planned feature. If that ever changes, porting ResearchMesh's `mcp_server.py`
+  would mostly work; its hard part (the file-descriptor-level stdout guard)
+  applies unchanged.
+- No recursion or loop protection for a worker configured to point back here —
+  open question, not yet resolved.
