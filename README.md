@@ -364,8 +364,11 @@ Then add it to `config.toml` here — see [Configuration](#configuration) above 
 full example. Four fields deserve a second look.
 
 **`name` becomes the tool prefix** — `gpu-box__delegate`. Keep it short; letters,
-digits, `_` and `-` only. Anything else is substituted with `_`, so `gpu box` and
-`gpu-box` would collide.
+digits, `_` and `-` only — those two are already legal and pass through
+unchanged. Anything else is substituted with `_`, so `gpu box` and `gpu.box`
+would collide (not `gpu-box`, which needs no substitution at all); a collision
+like that gets a numeric suffix rather than silently shadowing one worker's
+tool with the other's.
 
 **`description` is strongly recommended.** ResearchMesh hardcodes a single
 description constant, so every worker describes itself identically unless you add
