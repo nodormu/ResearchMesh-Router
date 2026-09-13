@@ -7,6 +7,7 @@ from prompt_toolkit.styles import Style
 
 from core import listen, speak
 from core.chat import Chat
+from core.claude import load_claude_models, resolve_model_swap
 
 
 class CliApp:
@@ -140,6 +141,100 @@ class CliApp:
                             f"[listen: {result.get('status')} — "
                             f"{result.get('reason', result.get('error', ''))}]"
                         )
+                    continue
+
+                # /model lists config.toml's claude_models (re-read fresh
+                # each call, see core/claude.py's load_claude_models — an
+                # edit to config.toml shows up without a restart). /model
+                # swap <name/index> actually changes it: session-only, it
+                # never writes config.toml, so a new session always starts
+                # back on claude_models[0]. An invalid name/index rejects
+                # with an error and the valid list, same reject-don't-crash
+                # pattern as /voice and /listen above. This (bare /model)
+                # affects only the ROUTER's OWN reasoning model
+                # (self.agent.claude_service) — see the worker-scoped branch
+                # immediately below for changing a CONNECTED worker's model
+                # instead.
+                if text == "/model" or text.startswith("/model "):
+                    rest = text[len("/model"):].strip()
+                    parts = rest.split(None, 1)
+                    sub = parts[0] if parts else ""
+                    arg = parts[1].strip() if len(parts) > 1 else ""
+
+                    # `/model <worker>` (list) or `/model <worker> swap
+                    # <name/index>` — reaches into a CONNECTED worker's own
+                    # `model` MCP tool directly (self.agent.clients), the
+                    # same free/local/no-API-call pattern `/workers` already
+                    # uses. Deliberately NOT reused via Chat.split_worker():
+                    # that helper requires a non-empty remainder (built for
+                    # /dagent, which always needs a task), but a bare
+                    # `/model <worker>` legitimately has nothing after the
+                    # worker name — this is its own worker-name check for
+                    # exactly that reason. Every response line is prefixed
+                    # `[worker: <name>] ` (the same tag format
+                    # core/tools.py already uses for a worker's tool
+                    # descriptions), so a remote result can never be mistaken
+                    # for the router's own bare /model output above — never
+                    # print an un-prefixed "[model: ...]" line for a worker
+                    # result.
+                    #
+                    # The precedence check (`sub in self.agent.clients`) and
+                    # the arg-parsing it implies are pulled into
+                    # Chat.resolve_worker_model_request() (sync, pure — no MCP
+                    # call), and the actual fallible MCP call + response
+                    # formatting into Chat.call_worker_model() (async), so
+                    # both are unit-testable without a live REPL or a real
+                    # worker process — see smoke_test.py's
+                    # check_model_worker_dispatch(). This branch is now just
+                    # the same thin print/continue wrapper every other
+                    # command here already is.
+                    resolved = self.agent.resolve_worker_model_request(sub, arg)
+                    if resolved is not None:
+                        worker_id, arguments, error_text = resolved
+                        if arguments is None:
+                            print(error_text)
+                        else:
+                            print(
+                                await self.agent.call_worker_model(
+                                    worker_id, arguments
+                                )
+                            )
+                        continue
+
+                    try:
+                        models = load_claude_models()
+                    except ValueError as e:
+                        print(f"[model: {e}]")
+                        continue
+
+                    if not sub:
+                        current = self.agent.claude_service.model
+                        lines = [
+                            f"  {i}. {m}" + ("  (current)" if m == current else "")
+                            for i, m in enumerate(models, start=1)
+                        ]
+                        print("[model: available]\n" + "\n".join(lines))
+                        continue
+
+                    if sub == "swap":
+                        if not arg:
+                            print("[usage: /model swap <name or index>]")
+                            continue
+                        chosen = resolve_model_swap(models, arg)
+                        if chosen is None:
+                            print(
+                                f"[model: {arg!r} not recognized — "
+                                "run /model to see the list]"
+                            )
+                            continue
+                        self.agent.claude_service.model = chosen
+                        print(f"[model: swapped to {chosen}]")
+                        continue
+
+                    print(
+                        f"[model: unrecognized subcommand {sub!r} — "
+                        "use /model or /model swap <name/index>]"
+                    )
                     continue
 
                 thinking = False

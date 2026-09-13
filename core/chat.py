@@ -2,6 +2,7 @@ import os
 from collections.abc import Mapping
 
 from anthropic.types import MessageParam, ToolResultBlockParam
+from mcp.types import TextContent
 
 from core import local_tools
 from core.claude import Claude
@@ -437,6 +438,97 @@ class Chat:
         if head in self.clients and rest.strip():
             return head, rest.strip()
         return None, query.strip()
+
+    def resolve_worker_model_request(
+        self, sub: str, arg: str
+    ) -> tuple[str, dict[str, str] | None, str | None] | None:
+        """Parse `/model <sub> <arg>` to decide whether `sub` names a
+        CONNECTED worker and, if so, what request that implies for its
+        `model` MCP tool.
+
+        This is the precedence-critical half of `/model`'s worker-reach-in
+        branch: `sub in self.clients` is what makes worker-name-wins the rule
+        over subcommand-name-wins — e.g. a worker literally named "swap" is
+        still treated as a worker target, never confused with the router's
+        own `/model swap <name/index>` subcommand. Extracted as its own
+        method (mirroring `split_worker()` above) specifically so this
+        precedence decision is unit-testable without a live REPL or a real
+        MCP round trip — see smoke_test.py's
+        check_model_worker_dispatch().
+
+        Returns:
+          None
+            `sub` is not a connected worker id. The caller should ignore
+            `arg` entirely and fall through to the router's OWN bare
+            `/model` handling instead.
+          (worker_id, None, error_text)
+            `sub` IS a worker, but `arg` didn't parse into a valid request
+            (a missing swap target, or an unrecognized subcommand).
+            `error_text` is the exact, ready-to-print rejection message.
+            The caller should print it and make NO MCP call.
+          (worker_id, arguments, None)
+            `sub` IS a worker with a fully valid request. `arguments` is
+            exactly the dict to pass to `client.call_tool("model", ...)` —
+            the caller performs that (fallible) call next.
+        """
+        if sub not in self.clients:
+            return None
+
+        worker_id = sub
+        wsub_parts = arg.split(None, 1) if arg else []
+        wsub = wsub_parts[0] if wsub_parts else ""
+        warg = wsub_parts[1].strip() if len(wsub_parts) > 1 else ""
+
+        if not wsub:
+            return worker_id, {"action": "list"}, None
+        if wsub == "swap":
+            if not warg:
+                return (
+                    worker_id,
+                    None,
+                    f"[usage: /model {worker_id} swap <name or index>]",
+                )
+            return worker_id, {"action": "swap", "arg": warg}, None
+        return (
+            worker_id,
+            None,
+            (
+                f"[worker: {worker_id}] unrecognized subcommand {wsub!r} — use "
+                f"/model {worker_id} or /model {worker_id} swap <name/index>"
+            ),
+        )
+
+    async def call_worker_model(
+        self, worker_id: str, arguments: dict[str, str]
+    ) -> str:
+        """Actually invoke a connected worker's `model` MCP tool and format
+        the result — the other half of `/model`'s worker-reach-in branch,
+        paired with `resolve_worker_model_request()` above.
+
+        Any transport/protocol error from the call is caught and reported,
+        never raised — same reject-don't-crash posture as every other
+        worker-facing path in this file. Extracted as its own method for the
+        same testability reason as `resolve_worker_model_request()`: a
+        FakeWorker can script a response OR an exception here without any
+        real MCP process or live REPL involved.
+        """
+        client = self.clients[worker_id]
+        try:
+            result = await client.call_tool("model", arguments)
+        except Exception as e:
+            return f"[worker: {worker_id}] model tool call failed: {e}"
+
+        texts = (
+            [b.text for b in result.content if isinstance(b, TextContent)]
+            if result and result.content
+            else []
+        )
+        body = "\n".join(texts) or (
+            "(no output)"
+            if not (result and result.is_error)
+            else "(error, no message text)"
+        )
+        return f"[worker: {worker_id}] {body}"
 
     async def run(
         self,

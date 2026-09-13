@@ -293,19 +293,27 @@ worker MCP tools**.
 
 - **`core/cli.py`** — was verbatim from ResearchMesh; now carries two kinds of
   addition. `/workers` and `/dagent` are genuinely router-specific — the only
-  actual divergence in *behavior* from ResearchMesh's own `cli.py`. `/voice` and
-  `/listen`, by contrast, are a straight port: same `core/speak.py`/
-  `core/listen.py` modules (byte-identical, per the table above), same
-  `_submit()` refactor, same auto-submit-on-dictation design — the only change
-  from ResearchMesh's version is threading `remote_only`/`worker` through
-  `_submit()` so a dictated turn still respects whatever `/dagent` state, if
-  any, was in effect (in practice: never, since a dictated turn is always a
-  plain new turn — you can't speak a `/dagent` prefix and a task in the same
-  breath). See ResearchMesh's own `speak_listen_tool_integration_plan.md` (in
-  *its* `/memories`, not this repo's) for the full design history and live-test
-  log behind `/voice`/`/listen`; nothing here differs from what's documented
-  there. (`/clear` was added to both repos independently and is not a
-  divergence either.)
+  actual divergence in *behavior* from ResearchMesh's own `cli.py`. `/voice`,
+  `/listen`, and `/model`, by contrast, are straight ports. `/voice`/`/listen`
+  reuse `core/speak.py`/`core/listen.py` (byte-identical, per the table
+  above), same `_submit()` refactor, same auto-submit-on-dictation design —
+  the only change from ResearchMesh's version is threading
+  `remote_only`/`worker` through `_submit()` so a dictated turn still
+  respects whatever `/dagent` state, if any, was in effect (in practice:
+  never, since a dictated turn is always a plain new turn — you can't speak a
+  `/dagent` prefix and a task in the same breath). See ResearchMesh's own
+  `speak_listen_tool_integration_plan.md` (in *its* `/memories`, not this
+  repo's) for the full design history and live-test log behind
+  `/voice`/`/listen`; nothing here differs from what's documented there.
+  `/model`/`/model swap` reuse `core/claude.py`'s `load_claude_models()`/
+  `resolve_model_swap()` (also ported, see the Runtime configuration section
+  below) — the branch itself is byte-identical logic to ResearchMesh's,
+  differing only in where it sits relative to `/dagent`'s worker-prefix
+  parsing lower down in the same `run()` loop. See ResearchMesh's own
+  `adding-model-command-to-swap-between-Anthropic-models.md` (in *its*
+  `/memories`) for the full design history, including the live-scan/TTL/cache
+  work behind `refresh_claude_models()`. (`/clear` was added to both repos
+  independently and is not a divergence either.)
 
   - **`/clear`** (also `/reset`) — empties `self.messages`, keeps the fleet
     connected. This is the recovery path from the two failures that *persist*:
@@ -318,6 +326,60 @@ worker MCP tools**.
     Note the size report is in **characters, not tokens**: `count_tokens`
     cannot measure this conversation at all, because `web_search`/`web_fetch`
     are server tools and that endpoint rejects them.
+
+  - **`/model`** (bare) lists `config.toml`'s `[claude] claude_models` array
+    with 1-based indices and marks whichever one
+    `self.agent.claude_service.model` currently is; **`/model swap <name or
+    index>`** mutates that same attribute directly (`Claude.chat()` reads
+    `self.model` fresh every call, so this takes effect on the very next
+    turn, no restart) — session-only, it never writes `config.toml`, so a new
+    session always starts on `claude_models[0]`. Affects **only the router's
+    own reasoning model**; a connected worker's model is entirely its own
+    concern, unaffected by this command. An unrecognized name/index or a bare
+    `/model swap` with no argument rejects with a message and does not
+    swap — same reject-don't-crash posture as `/voice`/`/listen`.
+
+  - **`/model <worker>`** / **`/model <worker> swap <name or index>`** — the
+    Phase-R3 counterpart of the bare command above: reaches into a CONNECTED
+    worker instead of the router itself. Checked *before* the bare-`/model`
+    parsing (`sub in self.agent.clients`), so `/model gpu-box` is recognized
+    as worker-targeted rather than an unrecognized router subcommand named
+    `gpu-box`. Calls that worker's own `model` MCP tool directly via
+    `self.agent.clients[worker_id].call_tool("model", ...)` — bypassing
+    Claude and `ToolManager` entirely, the same free/local/no-API-call
+    pattern `/workers` above already uses. Deliberately NOT built on
+    `Chat.split_worker()`: that helper requires a non-empty remainder (it
+    exists for `/dagent`, which always needs a task after the worker name),
+    but a bare `/model <worker>` legitimately has nothing after the worker
+    name at all — this command parses the worker prefix itself for exactly
+    that reason. The precedence check and its arg-parsing live in
+    `Chat.resolve_worker_model_request()` (sync, pure), and the actual
+    fallible call plus response formatting in `Chat.call_worker_model()`
+    (async) — both extracted out of `core/cli.py`'s dispatch branch
+    specifically so this cross-process contract is unit-testable without a
+    live REPL or a real worker subprocess (`smoke_test.py`'s
+    `check_model_worker_dispatch()`, 18 assertions, including the
+    worker-literally-named-"swap" precedence case). `core/cli.py`'s own
+    branch is now just the thin print/continue wrapper every other command
+    here already is. Every line printed for a worker result is prefixed
+    `[worker: <name>] ` (same tag format `core/tools.py` already uses for a
+    worker's namespaced tool descriptions) — a deliberate, confirmed-with-
+    the-user design choice so a remote result can never read like the
+    router's own bare `/model` output; the two are never allowed to look the
+    same. No TTL/cache logic of any kind lives on the router's side of this
+    command — a worker's own `model` tool owns its own live-scan/TTL
+    decision entirely (see ResearchMesh's own `core/claude.py`), the same
+    way the router owns that decision for its own model above. **This
+    command is optional, not required** — because a connected worker's
+    `model` tool is merged/namespaced into the tool list exactly like
+    `delegate` is (`core/tools.py`'s existing namespacing, unmodified),
+    the router's own Claude can discover and call it during an ordinary
+    turn given a plain-language ask (e.g. "swap gpu-box to opus") with
+    no slash command at all — confirmed live, a real behavior and not just
+    a theoretical consequence of the namespacing code. See
+    `adding-model-command-to-swap-between-Anthropic-models.md` (in
+    ResearchMesh's own `/memories`) for the full design history of both
+    halves of this feature.
 
   - **`/workers`** — the fleet that is **up**, with the exact names `/dagent`
     takes. Answered locally without spending a turn. It rebuilds the index
@@ -368,7 +430,26 @@ worker MCP tools**.
 
 - `ANTHROPIC_API_KEY` — from the shell. `main.py` keeps an explicit `os.getenv`
   reference for the same reason ResearchMesh does; do not remove it.
-- `CLAUDE_MODEL` — overrides `[claude] model`.
+- The ROUTER's OWN Claude model comes from `config.toml` (`[claude]
+  claude_models`, a list) — the first entry is what every new session starts
+  on. Ported from ResearchMesh (same file/mechanism, see that repo's own
+  CLAUDE.md and `adding-model-command-to-swap-between-Anthropic-models.md` in
+  its `/memories` for the full design history): that list is a live-refreshed
+  cache, not hand-typed — `core/claude.py`'s `refresh_claude_models()` is
+  TTL-gated (`model_scan_ttl_hours`, default 24), re-scanning Anthropic's real
+  `/v1/models` via `fetch_live_models()` once the cache goes stale and
+  rewriting `claude_models` in place, one entry per model family, newest-first
+  except sonnet is always moved to the front. A failed scan (offline, bad key)
+  touches nothing on disk. No env var override — `CLAUDE_MODEL` is NOT read
+  here (an earlier, now-removed line in this file claimed it overrode
+  `[claude] model`; that was the pre-`/model` single-string config, gone as
+  of this port). Swapping mid-session is `/model swap`'s job (`core/
+  cli.py`), and it affects **only the router's own reasoning model** — it has
+  no bearing on which model a connected worker uses internally, that is
+  entirely each worker's own `config.toml`. `e2e_test.py` has its own,
+  separate `os.getenv("CLAUDE_MODEL", "claude-sonnet-5")` for picking a test
+  model — unrelated to this app's actual config-loading path, not touched by
+  this port.
 - `CLAUDE_SHOW_USAGE=1` — per-request token and cache counters. Worth more here
   than in ResearchMesh: the tool list is built from *live* workers, so a worker
   dropping out mid-session reshapes the cached prefix and silently costs the hit.

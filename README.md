@@ -215,6 +215,8 @@ Just type. At the `>` prompt:
 | `/dagent <worker> <task>` | the same, pinned to one machine |
 | `/think <anything>` | give Claude longer to reason |
 | `/clear` | drop the conversation, keep the workers connected |
+| `/model` | list the ROUTER's own models, `/model swap <name\|index>` to swap for this session |
+| `/model <worker>` | list a CONNECTED WORKER's models, `/model <worker> swap <name\|index>` to swap them remotely |
 | `/voice [on\|off]` | toggle whether Claude's replies also get spoken aloud (`speak`, local Piper TTS) |
 | `/listen [N]` | record `N` seconds from your mic (or `[listen].default_duration_seconds`), transcribe locally (faster-whisper), and auto-submit it as your next turn — no Enter press needed, works the same whether `/voice` is on or off |
 
@@ -223,6 +225,34 @@ tools table above and that file's own inline setup comments) — both are shippe
 commented out, same as `[vision]`/`[embeddings]`. Without that, `/voice` still toggles
 but has nothing to speak, and `/listen` reports a clear `not_configured`/`disabled`
 message instead of trying to open the mic.
+
+**`/model`** lists the models in `config.toml`'s `[claude] claude_models`, each with an
+index; **`/model swap <name or index>`** swaps the model for the rest of this session
+only — it never edits `config.toml`, so the next new session always starts back on the
+first entry in the list. That list itself is a live-refreshed cache, not hand-typed:
+roughly once a day (`model_scan_ttl_hours`, default 24) it re-scans Anthropic's actual
+`/v1/models` and rewrites `claude_models` to one entry per model family, newest release
+first — sonnet is always placed first when present, matching Anthropic's own documented
+default recommendation. A failed scan (offline, bad key) changes nothing on disk; the
+existing cached list is used as-is. **This affects only the router's own reasoning
+model** — the one it uses to decide what to do and which tools to call. It has no effect
+on which model a connected worker (e.g. a ResearchMesh instance) uses internally; that is
+each worker's own `config.toml`, entirely separate.
+
+**`/model <worker>`** reaches into a CONNECTED worker and lists *its* models instead —
+e.g. `/model gpu-box` — sourced from that worker's own `model` MCP tool (delegate's
+sibling, not delegate itself; no agent turn is spent and no Anthropic API call is made
+just to check or swap it). **`/model <worker> swap <name or index>`** swaps that
+worker's model immediately, for every subsequent `delegate` call to it from any session,
+until changed again or that worker process restarts. Every response from a worker is
+printed with a `[worker: <name>]` prefix — deliberately never bare `[model: ...]` — so it
+can never be mistaken for the router's own `/model` output above. A worker's own TTL/
+live-scan cache (same mechanism as the router's own, described above) is entirely that
+worker's concern; the router does not layer any TTL logic of its own on top of a remote
+`/model <worker>` call. You do not have to use the slash command for this at all — the
+router's own Claude can see and call a connected worker's `model` tool on its own
+initiative during a normal turn (it is merged/namespaced into the tool list exactly like
+`delegate` is), so asking in plain language ("swap gpu-box to opus") works too.
 
 **Ctrl-C** exits and shuts everything down cleanly.
 
