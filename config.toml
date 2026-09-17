@@ -29,7 +29,7 @@ claude_models = ["claude-sonnet-5", "claude-fable-5-1", "claude-opus-5", "claude
 # smaller number just adds network calls to every other process start for
 # no practical benefit.
 model_scan_ttl_hours = 24
-claude_models_checked_at = "2026-09-13T21:05:39.946074+00:00"
+claude_models_checked_at = "2026-09-17T20:29:41.757876+00:00"
 
 [router]
 # How many workers may be busy at the same time.
