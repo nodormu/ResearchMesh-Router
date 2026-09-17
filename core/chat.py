@@ -10,6 +10,16 @@ from core.tools import ToolIndex, ToolManager, Worker
 
 MAX_TOOL_ITERATIONS = 75
 
+# Separate, small grace budget for continuations the API contract makes
+# mandatory (an open pause_turn; a server_tool_use left dangling by a mixed
+# tool_use response) — MAX_TOOL_ITERATIONS alone must never block these.
+# 5 matches Anthropic's own reference example's `max_continuations` default.
+# See Chat._finalize_turn for what happens if even this runs out. Ported
+# from ResearchMesh core/chat.py (commit 672aae1) — same bug class is
+# reachable here too since this router also exposes web_search/web_fetch
+# as real Anthropic server tools (core/claude_learned_schemas.py).
+EXTRA_CONTINUATION_LIMIT = 5
+
 # Set CLAUDE_SHOW_USAGE=1 to print token and cache counters per request. Prompt
 # caching fails *silently* (a too-short prefix or a changed byte early in the
 # prefix just means no hit, with no error), so this is the only way to confirm
@@ -137,7 +147,7 @@ def _block_field(block, name: str):
 
 
 def _orphaned_tool_uses(messages) -> list[str]:
-    """tool_use ids that never got a tool_result — the poisoned-session check.
+    """tool_use ids that never got a result block — the poisoned-session check.
 
     The API requires every tool_use block to be answered in the *immediately
     following* message. One that isn't doesn't just break the turn it happened
@@ -146,8 +156,30 @@ def _orphaned_tool_uses(messages) -> list[str]:
     reads as "it started 400ing and won't stop", which is very hard to tell
     from a context overflow without looking.
 
-    `_resolve_pending_tool_uses` exists to make this impossible. This is how you
-    find out it didn't.
+    Covers both flavors the API can leave dangling, not just the client-tool
+    one:
+      - a plain client `tool_use` block, answered by a `tool_result` block.
+      - a `server_tool_use` (or an MCP-connector `mcp_tool_use`) block,
+        answered by a tool-specific result block instead — e.g.
+        `web_search_tool_result`, `web_fetch_tool_result`. This router
+        exposes both as real Anthropic server tools (see
+        core/claude_learned_schemas.py), so this is a real, reachable case,
+        not a theoretical one. A dangling one is just as poisonous: the
+        assistant turn never closed, so the next request 400s the same way
+        a missing client tool_result does. Matched generically by suffix
+        (`_tool_use` / `_tool_result`) rather than a hardcoded list of
+        current tool names, so a future server tool is covered without
+        editing this function again.
+
+    Both flavors pair up by the same id field regardless of which specific
+    block type is involved — confirmed against Anthropic's own docs: "A
+    server_tool_use block and its result block pair up by tool_use_id, not
+    by position."
+
+    `Chat._finalize_turn` exists to make this list empty by the time any
+    turn ends; this is how you find out it didn't. Ported from ResearchMesh
+    core/chat.py (commit 672aae1) — see that repo's dev log for the full
+    production-error history this closes out.
     """
     answered: set[str] = set()
     issued: list[str] = []
@@ -157,15 +189,139 @@ def _orphaned_tool_uses(messages) -> list[str]:
             continue
         for block in content:
             kind = _block_field(block, "type")
-            if kind == "tool_use":
+            if not kind:
+                continue
+            if kind == "tool_use" or kind.endswith("_tool_use"):
                 block_id = _block_field(block, "id")
                 if block_id:
                     issued.append(block_id)
-            elif kind == "tool_result":
+            elif kind == "tool_result" or kind.endswith("_tool_result"):
                 used = _block_field(block, "tool_use_id")
                 if used:
                     answered.add(used)
     return [i for i in issued if i not in answered]
+
+
+def _classify_orphans(messages) -> tuple[list[str], list[str]]:
+    """Split `_orphaned_tool_uses`'s output by whether each id is mechanically
+    fixable or not.
+
+    A plain client `tool_use` block can always be closed out with a synthetic
+    error `tool_result` — that's what makes it "client-flavored" here. A
+    `server_tool_use`/`mcp_tool_use` block (web_search, web_fetch, an MCP
+    connector tool) cannot: the API expects a type-specific result block
+    (`web_search_tool_result`, etc.) that this app never had the real data
+    for, since the server ran it, not us. Returns (client_ids, server_ids).
+    """
+    ids = _orphaned_tool_uses(messages)
+    if not ids:
+        return [], []
+    orphan_set = set(ids)
+    client_ids: list[str] = []
+    server_ids: list[str] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            block_id = _block_field(block, "id")
+            if block_id not in orphan_set:
+                continue
+            kind = _block_field(block, "type")
+            if kind == "tool_use":
+                client_ids.append(block_id)
+            elif kind and kind.endswith("_tool_use"):
+                server_ids.append(block_id)
+    return client_ids, server_ids
+
+
+def _duplicate_tool_result_ids(messages) -> dict[str, int]:
+    """tool_use_ids answered by MORE than one tool_result-family block.
+
+    The literal API error is `invalid_request_error: ... each tool_use must
+    have a single result. Found multiple tool_result blocks with id: <id>`
+    — confirmed hit for real in production, on ResearchMesh (this router's
+    sibling client, same core/chat.py lineage before this port). Returns
+    {id: count}.
+    """
+    counts: dict[str, int] = {}
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            kind = _block_field(block, "type")
+            if not kind:
+                continue
+            if kind == "tool_result" or kind.endswith("_tool_result"):
+                used = _block_field(block, "tool_use_id")
+                if used:
+                    counts[used] = counts.get(used, 0) + 1
+    return {k: v for k, v in counts.items() if v > 1}
+
+
+def _dedupe_duplicate_tool_results(messages) -> int:
+    """Mutates `messages` in place: for any tool_use_id with more than one
+    tool_result-family block answering it, keep only the FIRST one seen (in
+    message order — the real one from genuine tool execution) and drop the
+    rest (synthetic duplicates from the now-fixed iteration-cutoff bug, or
+    any other stray duplicate).
+
+    Removes just the offending blocks from whichever message's content list
+    holds them, not whole messages — never a bulk deletion. Returns how many
+    blocks were removed.
+    """
+    dup_counts = _duplicate_tool_result_ids(messages)
+    if not dup_counts:
+        return 0
+    seen: set[str] = set()
+    removed = 0
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        kept = []
+        for block in content:
+            kind = _block_field(block, "type")
+            is_result = bool(kind) and (kind == "tool_result" or kind.endswith("_tool_result"))
+            used = _block_field(block, "tool_use_id") if is_result else None
+            if is_result and used in dup_counts:
+                if used in seen:
+                    removed += 1
+                    continue
+                seen.add(used)
+            kept.append(block)
+        message["content"] = kept
+    return removed
+
+
+def _excise_dangling_blocks(messages, ids: set[str]) -> int:
+    """Mutates `messages` in place: removes any block whose `id` is in `ids`
+    — used only for a `server_tool_use`/`mcp_tool_use` orphan, where no
+    synthetic result block satisfies the API's schema for that tool type.
+
+    Removes only the specific dangling block(s), never the message that
+    holds them (any other content in that message — text, other blocks — is
+    kept) and never any other message. This is the minimal possible repair:
+    contrast with wiping a turn or a conversation, neither of which this file
+    does anywhere. Returns how many blocks were removed.
+    """
+    if not ids:
+        return 0
+    removed = 0
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        kept = []
+        for block in content:
+            block_id = _block_field(block, "id")
+            if block_id in ids:
+                removed += 1
+                continue
+            kept.append(block)
+        message["content"] = kept
+    return removed
 
 
 def _approx_size(messages) -> tuple[int, int]:
@@ -309,35 +465,49 @@ class Chat:
 
         return [by_id[block.id] for block in blocks]
 
-    def _resolve_pending_tool_uses(self, response, reason: str) -> None:
-        """Guarantee every tool_use block in `response` has a tool_result.
+    def _finalize_turn(self, reason: str) -> str:
+        """Close out a turn that's ending abnormally. Always re-scans the
+        live `self.messages` for what's actually still dangling — never
+        trusts a cached `response` object (that was the source of a real
+        duplicate-tool_result bug on ResearchMesh, this router's sibling
+        client — same core/chat.py lineage before this port; see that
+        repo's dev log for the full production-error history).
 
-        self.messages persists for the life of the process (one Chat per
-        run), so any tool_use left unresolved here doesn't just affect this
-        turn — it poisons *every* request for the rest of the session with a
-        400 (`tool_use ids were found without tool_result blocks immediately
-        after`), because that block is still sitting there with nothing after
-        it. This is the fallback of last resort for the two ways that used to
-        happen: the MAX_TOOL_ITERATIONS cutoff firing right after a
-        stop_reason == "tool_use" response (the loop broke before ever
-        calling _run_tool_uses for it), and an exception escaping tool
-        routing entirely. Safe to call even when there's nothing to resolve.
+        Never deletes a turn, a message, or the conversation — only the
+        specific dangling block(s), each in the minimal way its flavor
+        allows: client `tool_use` gets a synthetic error `tool_result`;
+        server-flavored (`server_tool_use`/`mcp_tool_use`) has no valid
+        synthetic result, so the block itself is excised in place.
+
+        Replaces the old `_resolve_pending_tool_uses` (only ever handled
+        the client-tool_use case, and only when `stop_reason == "tool_use"`
+        — a dangling server_tool_use at the iteration cutoff during an
+        open pause_turn was never resolved at all).
+
+        Returns the text to show the user.
         """
-        if response is None or response.stop_reason != "tool_use":
-            return
-        blocks = [b for b in response.content if b.type == "tool_use"]
-        if not blocks:
-            return
-        results = [
-            {
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": f"[{reason}]",
-                "is_error": True,
-            }
-            for block in blocks
-        ]
-        self.claude_service.add_user_message(self.messages, results)
+        client_ids, server_ids = _classify_orphans(self.messages)
+        if client_ids:
+            results = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": i,
+                    "content": f"[{reason}]",
+                    "is_error": True,
+                }
+                for i in client_ids
+            ]
+            self.claude_service.add_user_message(self.messages, results)
+        base = f"[{reason}]"
+        if server_ids:
+            _excise_dangling_blocks(self.messages, set(server_ids))
+            base += (
+                f" {len(server_ids)} background tool call"
+                f"{'s' if len(server_ids) != 1 else ''} that never finished "
+                f"{'were' if len(server_ids) != 1 else 'was'} removed so the "
+                "conversation can continue — nothing else was touched."
+            )
+        return base
 
     def clear(self) -> str:
         """`/clear` — drop the conversation, keep the process and the fleet.
@@ -365,13 +535,26 @@ class Chat:
             )
         return f"[{detail}]"
 
-    def _report_api_failure(self, error: Exception) -> None:
+    def _report_api_failure(
+        self, error: Exception, repair_attempted: str | None = None
+    ) -> None:
         """Say which failure this is, rather than leaving it to guesswork.
 
-        The two that persist look identical from the outside — the router
-        starts 400ing and does not stop — but they have different causes and
-        different fixes, and the error text plus these two numbers separate
-        them every time.
+        By the time this runs, `_call_chat_with_auto_repair` has already
+        tried the one fully-mechanical repair this app knows how to do
+        (dedupe/answer/excise dangling tool blocks — see
+        `_auto_repair_poisoned_history`) and retried once.
+        `repair_attempted` carries what it found and fixed, if anything.
+
+        This never recommends `/clear`, or any other action that discards
+        conversation content, anywhere — deliberately (ported from
+        ResearchMesh core/chat.py commit 672aae1, whose whole point was
+        removing exactly that from every automated path — `/clear` still
+        exists as the manual command above, untouched). If nothing here
+        could be mechanically repaired, the honest thing to do is report the
+        facts (the error, the size, any orphans still present after the
+        repair attempt) and leave the decision to the user, not prescribe a
+        destructive default.
         """
         text = str(error)
         count, chars = _approx_size(self.messages)
@@ -380,21 +563,109 @@ class Chat:
         print(f"[api error] {text}")
         print(f"[api error] conversation: {count} messages, ~{chars:,} chars")
 
+        if repair_attempted:
+            print(
+                f"[api error] an automatic repair ran first ({repair_attempted}), "
+                "but the retried request still failed — this is a different, "
+                "unrelated problem."
+            )
+
         if orphans:
             print(
-                f"[api error] {len(orphans)} unanswered tool_use block(s): "
+                f"[api error] {len(orphans)} unanswered tool_use block(s) "
+                f"still present after the repair attempt: "
                 f"{', '.join(orphans[:3])}"
                 f"{' …' if len(orphans) > 3 else ''}"
             )
-            print(
-                "[api error] this poisons every later request in the session. "
-                "Run /clear."
-            )
         elif "too long" in text.lower() or "context" in text.lower():
             print(
-                "[api error] the conversation has outgrown the context window. "
-                "Run /clear."
+                "[api error] the conversation has outgrown the context window."
             )
+
+    def _auto_repair_poisoned_history(self) -> str | None:
+        """Mechanical, unconditionally-safe repair of `self.messages`,
+        tried whenever a real `chat()` call raises: dedupe any duplicate
+        tool_result, answer any orphaned client tool_use, excise any
+        orphaned server-flavored block. Touches only the offending blocks,
+        never a whole message or the conversation.
+
+        Ported from ResearchMesh core/chat.py (commit 672aae1).
+
+        Returns a short description of what was repaired, or None if there
+        was nothing here to fix (a real network/auth error, a genuine
+        context-window overflow, or some other cause).
+        """
+        repairs: list[str] = []
+
+        removed_dupes = _dedupe_duplicate_tool_results(self.messages)
+        if removed_dupes:
+            repairs.append(
+                f"removed {removed_dupes} duplicate tool_result block"
+                f"{'s' if removed_dupes != 1 else ''}"
+            )
+
+        client_ids, server_ids = _classify_orphans(self.messages)
+        if client_ids:
+            results = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": i,
+                    "content": "[repaired: this tool_use was never answered]",
+                    "is_error": True,
+                }
+                for i in client_ids
+            ]
+            self.claude_service.add_user_message(self.messages, results)
+            repairs.append(
+                f"answered {len(client_ids)} orphaned tool_use block"
+                f"{'s' if len(client_ids) != 1 else ''}"
+            )
+        if server_ids:
+            _excise_dangling_blocks(self.messages, set(server_ids))
+            repairs.append(
+                f"removed {len(server_ids)} dangling background tool block"
+                f"{'s' if len(server_ids) != 1 else ''} (no synthetic fix "
+                f"exists for these)"
+            )
+
+        return "; ".join(repairs) if repairs else None
+
+    def _call_chat_with_auto_repair(self, system, tool_defs, thinking):
+        """The one real `chat()` call site: on failure, try
+        `_auto_repair_poisoned_history` and retry once. Returns the
+        response on success (either attempt), or None if both raised
+        (`_report_api_failure` already called in that case).
+
+        Ported from ResearchMesh core/chat.py (commit 672aae1). `system` is
+        an explicit parameter here (unlike ResearchMesh's hardcoded
+        SYSTEM_PROMPT) because this router's system prompt varies per turn
+        (the `/dagent` remote_only branch appends _DELEGATE_ONLY_SUFFIX).
+        """
+        try:
+            return self.claude_service.chat(
+                messages=self.messages,
+                system=system,
+                tools=tool_defs,
+                thinking=thinking,
+            )
+        except Exception as e:
+            repair = self._auto_repair_poisoned_history()
+            if repair is None:
+                self._report_api_failure(e)
+                return None
+            print(f"[api error] {e}")
+            print(f"[api error] auto-repaired the conversation history: {repair}")
+            print("[api error] retrying this request once...")
+            try:
+                return self.claude_service.chat(
+                    messages=self.messages,
+                    system=system,
+                    tools=tool_defs,
+                    thinking=thinking,
+                )
+            except Exception as e2:
+                self._report_api_failure(e2, repair_attempted=repair)
+                return None
 
     async def workers_listing(self) -> str:
         """`/workers` — the fleet that is up, and the names `/dagent` takes.
@@ -611,51 +882,63 @@ class Chat:
                 "no fleet"
             )
 
-        response = None
-        iterations = 0
-        while True:
-            iterations += 1
-            if iterations > MAX_TOOL_ITERATIONS:
-                if response is None:
-                    # Only reachable with MAX_TOOL_ITERATIONS < 1, i.e. the
-                    # limit was hit before anything was ever sent: there is no
-                    # turn to resolve and no text to report.
-                    break
-                # `response` is still the last one we received (this iteration
-                # never calls chat() again). If it ended on stop_reason ==
-                # "tool_use", its tool_use blocks are already sitting in
-                # self.messages with nothing after them — resolve them before
-                # breaking, or the *next* user turn's first chat() call fails
-                # immediately with a 400, however many messages later.
-                self._resolve_pending_tool_uses(
-                    response, "stopped: exceeded tool-iteration limit"
-                )
-                final_text_response = (
-                    self.claude_service.text_from_message(response)
-                    or "[stopped: exceeded tool-iteration limit]"
-                )
-                break
+        # Index of this turn's own assistant message while a pause_turn
+        # continuation is open. Anthropic's own reference implementation
+        # REPLACES this slot on each continuation rather than appending a
+        # sibling message — an unconditional append here (the pre-port
+        # behavior) stacks multiple consecutive assistant-role messages
+        # with zero user messages between them across a multi-continuation
+        # pause_turn sequence, a real contract violation independent of
+        # the duplicate-tool_result bug below. Ported from ResearchMesh
+        # core/chat.py (commit 672aae1) — see that repo's dev log for the
+        # full production-error history this closes out.
+        pending_pause_turn_idx: int | None = None
 
-            try:
-                response = self.claude_service.chat(
-                    messages=self.messages,
-                    system=system,
-                    tools=tool_defs,
-                    thinking=thinking,
-                )
-            except Exception as e:
-                # Diagnose before returning. Both persistent failures leave the
-                # history in a state where every later turn fails the same way,
-                # so the useful information is *why*, and it is gone as soon as
-                # this returns a bare error string.
-                self._report_api_failure(e)
-                return f"[api error: {e}]"
+        iterations = 0
+        extra_continuations = 0
+        # Set only for the two cases where the next chat() call is
+        # API-mandated, not optional: an open pause_turn, or a
+        # server_tool_use left dangling by a mixed tool_use response.
+        # Reset every pass so the grace budget below is never spent on an
+        # ordinary continuation once the main budget runs out.
+        mandatory_continuation = False
+        while True:
+            if iterations >= MAX_TOOL_ITERATIONS:
+                if not mandatory_continuation:
+                    final_text_response = "[stopped: exceeded tool-iteration limit]"
+                    break
+                if extra_continuations >= EXTRA_CONTINUATION_LIMIT:
+                    final_text_response = self._finalize_turn(
+                        "stopped: exceeded tool-iteration limit"
+                    )
+                    break
+                extra_continuations += 1
+            else:
+                iterations += 1
+            mandatory_continuation = False
+
+            response = self._call_chat_with_auto_repair(system, tool_defs, thinking)
+            if response is None:
+                return "[api error: chat request failed]"
             if SHOW_USAGE:
                 _report_usage(response)
             if thinking:
                 thought = [b for b in response.content if b.type == "thinking"]
                 print(f"[thinking blocks: {len(thought)}]")
-            self.claude_service.add_assistant_message(self.messages, response)
+
+            if pending_pause_turn_idx is not None:
+                self.messages[pending_pause_turn_idx]["content"] = response.content
+            else:
+                self.claude_service.add_assistant_message(self.messages, response)
+
+            if response.stop_reason == "pause_turn":
+                # A worker-side pause; resend the conversation to resume it.
+                if pending_pause_turn_idx is None:
+                    pending_pause_turn_idx = len(self.messages) - 1
+                mandatory_continuation = True
+                continue
+
+            pending_pause_turn_idx = None
 
             if response.stop_reason == "tool_use":
                 print(self.claude_service.text_from_message(response))
@@ -664,29 +947,32 @@ class Chat:
                         response, index
                     )
                 except Exception as e:
-                    # execute_blocks already turns a per-block failure into an
-                    # error tool_result rather than raising, so reaching here
-                    # means something broke outside any single block's
-                    # execution (routing itself). Resolve the pending blocks
-                    # with a synthetic error result and stop for this turn
-                    # instead of crashing the process and leaving self.messages
-                    # permanently broken.
+                    # Genuinely unanswered — first time seeing these blocks,
+                    # not a re-resolution.
                     print(f"[tool routing error: {e}]")
-                    self._resolve_pending_tool_uses(
-                        response, f"tool execution failed: {e}"
+                    final_text_response = self._finalize_turn(
+                        f"tool execution failed: {e}"
                     )
-                    final_text_response = f"[error running tools: {e}]"
                     break
                 self.claude_service.add_user_message(
                     self.messages, tool_result_parts
                 )
-            elif response.stop_reason == "pause_turn":
-                # A worker-side pause; resend the conversation to resume it.
+
+                # A dangling server_tool_use here means the API owes us one
+                # more mandatory round trip to resolve it (Server tools doc).
+                _, server_ids = _classify_orphans(self.messages)
+                if server_ids:
+                    mandatory_continuation = True
+                    continue
+
+                if iterations >= MAX_TOOL_ITERATIONS:
+                    final_text_response = "[stopped: exceeded tool-iteration limit]"
+                    break
                 continue
-            else:
-                final_text_response = self.claude_service.text_from_message(
-                    response
-                )
-                break
+
+            final_text_response = self.claude_service.text_from_message(
+                response
+            )
+            break
 
         return final_text_response

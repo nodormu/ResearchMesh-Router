@@ -42,7 +42,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import cast
+from typing import ClassVar, cast
 
 from mcp.types import CallToolResult, TextContent, Tool
 
@@ -597,6 +597,349 @@ def check_clear_and_diagnostics() -> None:
         check(f"failure report survives a {label} error", ok)
 
 
+def check_run_loop_tool_use_lifecycle() -> None:
+    """Drive the real, unmodified `Chat.run()` against a scripted fake API:
+    the cutoff-duplicate bug, self-healing an already-poisoned history
+    (reproduces the actual ResearchMesh production error, same core/chat.py
+    lineage before this port), pause_turn replace-not-append, a mandatory
+    mixed-call follow-up, grace-budget-exhausted surgical excision (never a
+    turn/conversation wipe), and a normal multi-round regression guard.
+
+    Ported from ResearchMesh's smoke_test.py (same-named function) alongside
+    the core/chat.py fix itself (commit 672aae1 there). The only structural
+    difference from the original: this router calls `ToolManager.build`
+    (returning a `ToolIndex`) rather than ResearchMesh's `get_all_tools`, so
+    the fake here returns a minimal fake index instead of a bare list —
+    everything else (the six scenarios, the assertions) is the same
+    reproduction of the same bug class, since this router is reachable by it
+    too (it also declares web_search/web_fetch as real Anthropic server
+    tools — see core/claude_learned_schemas.py).
+
+    See ResearchMesh's researchmesh_client_dev_log.md for the full incident
+    history behind each scenario — not duplicated here since it's the same
+    root cause, ported.
+    """
+    print("run() loop: tool_use lifecycle (cutoff, self-heal, pause_turn, mixed calls)")
+    import core.chat as chat_mod
+    from core.chat import Chat, _duplicate_tool_result_ids, _orphaned_tool_uses
+
+    class FakeBlock:
+        def __init__(self, type, **kw):
+            self.type = type
+            for k, v in kw.items():
+                setattr(self, k, v)
+
+    class FakeResponse:
+        def __init__(self, stop_reason, content):
+            self.stop_reason = stop_reason
+            self.content = content
+            self.usage = type(
+                "U", (), {"input_tokens": 1, "output_tokens": 1}
+            )()
+
+    class FakeClaudeService:
+        def __init__(self, script):
+            self._script = list(script)
+            self.calls = 0
+
+        def add_user_message(self, messages, message):
+            messages.append(
+                {
+                    "role": "user",
+                    "content": message.content
+                    if hasattr(message, "content")
+                    else message,
+                }
+            )
+
+        def add_assistant_message(self, messages, message):
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": message.content
+                    if hasattr(message, "content")
+                    else message,
+                }
+            )
+
+        def text_from_message(self, message):
+            return "\n".join(
+                b.text for b in message.content if b.type == "text"
+            )
+
+        def chat(
+            self, messages, system=None, stop_sequences=None, tools=None,
+            thinking=False,
+        ):
+            self.calls += 1
+            item = self._script.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    class FakeIndex:
+        """Minimal stand-in for core.tools.ToolIndex — only what run()'s
+        non-remote_only path actually touches: `.tool_defs` (concatenated
+        onto local_tools.TOOLS) and `.summary()` (a one-line announce
+        print). Every scenario here runs the ordinary local-tools branch,
+        so `.defs_for`/`.worker_ids` (the remote_only path) are never
+        called and aren't stubbed."""
+        tool_defs: ClassVar[list] = []
+
+        def summary(self):
+            return "0 workers"
+
+    async def fake_execute(name, input):
+        return "ok"
+
+    async def fake_build(cls, clients, descriptions=None, reserved=None):
+        return FakeIndex()
+
+    orig_execute = chat_mod.local_tools.execute
+    orig_build = chat_mod.ToolManager.build
+    orig_max_iter = chat_mod.MAX_TOOL_ITERATIONS
+    orig_extra_limit = chat_mod.EXTRA_CONTINUATION_LIMIT
+    chat_mod.local_tools.execute = fake_execute
+    chat_mod.ToolManager.build = classmethod(fake_build)  # type: ignore[assignment]
+
+    try:
+        # --- 1: cutoff right after an ordinary tool_use round trip
+        chat_mod.MAX_TOOL_ITERATIONS = 1
+        fake1 = FakeClaudeService([
+            FakeResponse(
+                "tool_use", [FakeBlock("tool_use", id="t1", name="bash", input={})]
+            )
+        ])
+        c1 = Chat(claude_service=fake1, clients={})  # type: ignore[arg-type]
+        result1 = asyncio.run(c1.run("do a thing"))
+        check("cutoff: exactly one chat() call", fake1.calls == 1, str(fake1.calls))
+        check(
+            "cutoff: no duplicate tool_result",
+            not _duplicate_tool_result_ids(c1.messages),
+        )
+        check(
+            "cutoff: no orphaned tool_use", not _orphaned_tool_uses(c1.messages)
+        )
+        check(
+            "cutoff: reports the iteration limit",
+            "exceeded tool-iteration limit" in result1,
+            result1,
+        )
+
+        # --- 2: self-heal an already-poisoned history (exact prod repro,
+        # same id ResearchMesh's own report used — carried over verbatim
+        # since it's what makes this a repro rather than a synthetic case)
+        chat_mod.MAX_TOOL_ITERATIONS = 75
+        dup_id = "toolu_01Lz4DQdjjho9bntBh7LtYWJ"
+        fake2 = FakeClaudeService([
+            Exception(
+                "each tool_use must have a single result. Found multiple "
+                f"`tool_result` blocks with id: {dup_id}"
+            ),
+            FakeResponse("end_turn", [FakeBlock("text", text="all better now")]),
+        ])
+        c2 = Chat(claude_service=fake2, clients={})  # type: ignore[arg-type]
+        c2.messages = [
+            {"role": "user", "content": "earlier turn one"},
+            {"role": "assistant", "content": "answer one"},
+            {
+                "role": "assistant",
+                "content": [FakeBlock("tool_use", id=dup_id, name="bash", input={})],  # type: ignore[list-item]
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": dup_id, "content": "the REAL result"},
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": dup_id,
+                        "content": "[stopped: exceeded tool-iteration limit]",
+                        "is_error": True,
+                    },
+                ],
+            },
+        ]
+        earlier_turns_before = [dict(m) for m in c2.messages[:2]]
+        result2 = asyncio.run(c2.run("please continue"))
+        check(
+            "self-heal: one failed call + one successful retry",
+            fake2.calls == 2, str(fake2.calls),
+        )
+        check(
+            "self-heal: duplicate removed",
+            not _duplicate_tool_result_ids(c2.messages),
+        )
+        check("self-heal: no orphan left behind", not _orphaned_tool_uses(c2.messages))
+        check(
+            "self-heal: earlier turns preserved exactly",
+            c2.messages[:2] == earlier_turns_before,
+        )
+        check(
+            "self-heal: retried request's real answer returned",
+            "all better now" in result2, result2,
+        )
+
+        # --- 2b: self-heal a ZERO-result orphan (a distinct production
+        # error shape -- a tool_use with NO result at all, sitting as the
+        # very last message, vs. scenario 2's duplicate-result shape)
+        chat_mod.MAX_TOOL_ITERATIONS = 75
+        orphan_id = "toolu_01GegL1vVQgSDzMC2d6WfAsJ"
+        fake2b = FakeClaudeService([
+            Exception(
+                "messages.188: `tool_use` ids were found without "
+                f"`tool_result` blocks immediately after: {orphan_id}."
+            ),
+            FakeResponse("end_turn", [FakeBlock("text", text="picking up again")]),
+        ])
+        c2b = Chat(claude_service=fake2b, clients={})  # type: ignore[arg-type]
+        c2b.messages = [
+            {"role": "user", "content": "earlier turn"},
+            {"role": "assistant", "content": "earlier answer"},
+            {
+                "role": "assistant",
+                "content": [FakeBlock("tool_use", id=orphan_id, name="bash", input={})],  # type: ignore[list-item]
+            },
+        ]
+        before_2b = [dict(m) for m in c2b.messages[:2]]
+        result2b = asyncio.run(c2b.run("continue please"))
+        check(
+            "zero-orphan: one failed call + one successful retry",
+            fake2b.calls == 2, str(fake2b.calls),
+        )
+        check("zero-orphan: no orphan left behind", not _orphaned_tool_uses(c2b.messages))
+        check(
+            "zero-orphan: earlier turns preserved exactly",
+            c2b.messages[:2] == before_2b,
+        )
+        check(
+            "zero-orphan: retried request's real answer returned",
+            "picking up again" in result2b, result2b,
+        )
+
+        # --- 3: pause_turn continuations REPLACE, never append
+        chat_mod.MAX_TOOL_ITERATIONS = 75
+        server_block = FakeBlock("server_tool_use", id="s1", name="web_search", input={})
+        result_block = FakeBlock("web_search_tool_result", tool_use_id="s1", content=[])
+        fake3 = FakeClaudeService([
+            FakeResponse("pause_turn", [server_block]),
+            FakeResponse("pause_turn", [server_block, FakeBlock("text", text="still going")]),
+            FakeResponse(
+                "end_turn",
+                [server_block, result_block, FakeBlock("text", text="search done")],
+            ),
+        ])
+        c3 = Chat(claude_service=fake3, clients={})  # type: ignore[arg-type]
+        result3 = asyncio.run(c3.run("search for something"))
+        assistant_msgs3 = [m for m in c3.messages if m["role"] == "assistant"]
+        check(
+            "pause_turn: exactly one assistant message for the whole turn",
+            len(assistant_msgs3) == 1, str(len(assistant_msgs3)),
+        )
+        roles3 = [m["role"] for m in c3.messages]
+        no_adjacent_assistant = all(
+            not (roles3[i] == "assistant" == roles3[i + 1])
+            for i in range(len(roles3) - 1)
+        )
+        check(
+            "pause_turn: no two consecutive assistant messages",
+            no_adjacent_assistant, str(roles3),
+        )
+        check("pause_turn: real final answer returned", "search done" in result3, result3)
+
+        # --- 4: mixed client+server tool_use forces the mandatory follow-up
+        chat_mod.MAX_TOOL_ITERATIONS = 1
+        server_block4 = FakeBlock("server_tool_use", id="s1", name="web_search", input={})
+        client_block4 = FakeBlock("tool_use", id="c1", name="bash", input={})
+        fake4 = FakeClaudeService([
+            FakeResponse("tool_use", [server_block4, client_block4]),
+            FakeResponse(
+                "end_turn",
+                [
+                    server_block4,
+                    FakeBlock("web_search_tool_result", tool_use_id="s1", content=[]),
+                    FakeBlock("text", text="all resolved"),
+                ],
+            ),
+        ])
+        c4 = Chat(claude_service=fake4, clients={})  # type: ignore[arg-type]
+        result4 = asyncio.run(c4.run("mixed call"))
+        check(
+            "mixed call: mandatory follow-up made despite budget=1",
+            fake4.calls == 2, str(fake4.calls),
+        )
+        check("mixed call: no orphan left behind", not _orphaned_tool_uses(c4.messages))
+        check("mixed call: real final answer returned", "all resolved" in result4, result4)
+
+        # --- 5: grace budget also exhausted -> surgical excise only
+        chat_mod.MAX_TOOL_ITERATIONS = 1
+        chat_mod.EXTRA_CONTINUATION_LIMIT = 1
+        server_block5 = FakeBlock("server_tool_use", id="s1", name="web_search", input={})
+        fake5 = FakeClaudeService([
+            FakeResponse("pause_turn", [FakeBlock("text", text="searching"), server_block5]),
+            FakeResponse("pause_turn", [FakeBlock("text", text="still searching"), server_block5]),
+        ])
+        c5 = Chat(claude_service=fake5, clients={})  # type: ignore[arg-type]
+        c5.messages = [
+            {"role": "user", "content": "earlier turn"},
+            {"role": "assistant", "content": "earlier answer"},
+        ]
+        before5 = [dict(m) for m in c5.messages]
+        result5 = asyncio.run(c5.run("search for something"))
+        check("excise: earlier turn message 0 untouched", c5.messages[0] == before5[0])
+        check("excise: earlier turn message 1 untouched", c5.messages[1] == before5[1])
+        check(
+            "excise: current turn's own query preserved",
+            c5.messages[2] == {"role": "user", "content": "search for something"},
+        )
+        this_turn_assistant5 = [m for m in c5.messages[2:] if m["role"] == "assistant"]
+        check(
+            "excise: exactly one assistant message for this turn",
+            len(this_turn_assistant5) == 1, str(len(this_turn_assistant5)),
+        )
+        if this_turn_assistant5:
+            kinds5 = [getattr(b, "type", None) for b in this_turn_assistant5[0]["content"]]
+            check(
+                "excise: dangling server_tool_use removed",
+                "server_tool_use" not in kinds5, str(kinds5),
+            )
+            check(
+                "excise: unrelated text block in the same message survives",
+                "still searching" in [getattr(b, "text", None) for b in this_turn_assistant5[0]["content"]],
+                str(kinds5),
+            )
+        check(
+            "excise: never mentions /clear or a whole-turn wipe",
+            "/clear" not in result5 and "undone" not in result5, result5,
+        )
+
+        # --- 6: normal multi-round conversation, regression guard
+        chat_mod.MAX_TOOL_ITERATIONS = 75
+        fake6 = FakeClaudeService([
+            FakeResponse("tool_use", [FakeBlock("tool_use", id="a", name="bash", input={})]),
+            FakeResponse("tool_use", [FakeBlock("tool_use", id="b", name="bash", input={})]),
+            FakeResponse("end_turn", [FakeBlock("text", text="done for real")]),
+        ])
+        c6 = Chat(claude_service=fake6, clients={})  # type: ignore[arg-type]
+        result6 = asyncio.run(c6.run("multi round task"))
+        check(
+            "normal multi-round: all three calls made", fake6.calls == 3, str(fake6.calls)
+        )
+        check(
+            "normal multi-round: no dupes/orphans",
+            not _duplicate_tool_result_ids(c6.messages)
+            and not _orphaned_tool_uses(c6.messages),
+        )
+        check(
+            "normal multi-round: real final answer returned",
+            result6 == "done for real", result6,
+        )
+    finally:
+        chat_mod.local_tools.execute = orig_execute
+        chat_mod.ToolManager.build = orig_build  # type: ignore[method-assign]
+        chat_mod.MAX_TOOL_ITERATIONS = orig_max_iter
+        chat_mod.EXTRA_CONTINUATION_LIMIT = orig_extra_limit
+
+
 def check_model_command() -> None:
     """`/model` / `/model swap` — config.toml wiring and index/name matching.
 
@@ -1086,6 +1429,7 @@ def main() -> int:
         check_local_tools,
         check_dagent_and_workers,
         check_clear_and_diagnostics,
+        check_run_loop_tool_use_lifecycle,
         check_model_command,
         check_model_refresh,
         check_model_worker_dispatch,
