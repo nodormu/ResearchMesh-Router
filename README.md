@@ -187,6 +187,13 @@ export ANTHROPIC_API_KEY=sk-ant-...           # add to ~/.bashrc to keep it
 export CLAUDE_MEMORY_DIR=~/.router-memories   # else it writes into this repo
 ```
 
+If you also use Claude Code with a subscription, add this alias too (same file) so it
+doesn't shadow your subscription auth with the API key:
+
+```bash
+alias claude='env -u ANTHROPIC_API_KEY claude'
+```
+
 **Set `CLAUDE_MEMORY_DIR` explicitly.** The default (`./memories`, relative to the
 working directory) is the same default ResearchMesh itself uses — if you ever run
 both from adjacent checkouts or the same parent directory, they'd otherwise write

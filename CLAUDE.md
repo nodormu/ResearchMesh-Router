@@ -430,6 +430,13 @@ worker MCP tools**.
 
 - `ANTHROPIC_API_KEY` — from the shell. `main.py` keeps an explicit `os.getenv`
   reference for the same reason ResearchMesh does; do not remove it.
+- **Claude Code CLI vs. this app's own key** — same distinction as ResearchMesh's own
+  CLAUDE.md: setting `ANTHROPIC_API_KEY` makes Claude Code bill per-token instead of
+  using a Pro/Max subscription, even if one's active. `~/.bashrc`'s
+  `alias claude='env -u ANTHROPIC_API_KEY claude'` hides the variable from just that
+  one invocation (`env -u` scopes to the child process only) so `claude` falls back to
+  subscription auth while this app keeps reading the same shell's key untouched.
+  Don't suggest unsetting the variable itself; that breaks this app's own calls too.
 - The ROUTER's OWN Claude model comes from `config.toml` (`[claude]
   claude_models`, a list) — the first entry is what every new session starts
   on. Ported from ResearchMesh (same file/mechanism, see that repo's own
