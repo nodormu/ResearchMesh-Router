@@ -42,8 +42,12 @@ claude_models_checked_at = "2026-09-17T20:29:41.757876+00:00"
 # /bin/sh is already bash (RHEL/Fedora/AlmaLinux).
 #
 # Override to whatever shell you actually want, e.g. "/usr/bin/zsh" or
-# "zsh" — note zsh doesn't word-split unquoted variables by default the way
-# bash/dash do. Resolved once at process start — restart to pick up a change.
+# "zsh". If it resolves to zsh, a prelude (core/claude_learned_schemas.py's
+# apply_shell_prelude) automatically restores bash-style word-splitting and
+# glob-nomatch behavior, so ordinary bash syntax stays safe — zsh's 1-based
+# array indices are the one remaining difference, left as-is rather than
+# patched (the option that would fix it, KSH_ARRAYS, has its own side
+# effects). Resolved once at process start — restart to pick up a change.
 shell = "/bin/bash"
 
 [router]

@@ -534,15 +534,23 @@ worker MCP tools**.
   unset/blank/unresolvable). Resolved once at import, not fresh per call.
   Ships un-commented with the safe default here, unlike `[speak]`/`[listen]`
   above — `/bin/bash` needs no hardware-specific value to be usable, so there
-  is nothing to withhold. **`SYSTEM_PROMPT`'s local-tools section names
-  which shell the LOCAL `bash` actually runs through**, and the zsh-specific
-  word-splitting/1-indexed-array gotchas if it isn't bash — not a straight
-  port of ResearchMesh's own paragraph, which also explains `/bin/sh` on the
-  host (dropped here: only relevant to writing a standalone `#!/bin/sh`
-  script, a poor match for this router's own bash usage, which the prompt
-  itself frames as local bookkeeping rather than primary work). This is
-  scoped strictly to the router's own local `bash` — it says nothing about
-  any worker's shell, which is a separate, per-worker fact.
+  is nothing to withhold. **If `shell` resolves to zsh**, `apply_shell_prelude()`
+  (same module, also copied verbatim) prepends `setopt SH_WORD_SPLIT; unsetopt
+  NOMATCH` to every command — confirmed against zsh's own FAQ as exactly the
+  documented "classic differences" fix from bash, not assumed. Deliberately
+  does NOT also set `KSH_ARRAYS` to fix zsh's 1-based array indexing, since
+  that option changes what an unsubscripted `$array` means and makes braces
+  mandatory for subscripts that don't need them in plain zsh — trading one
+  divergence for a more invasive one; that gap is left as a `SYSTEM_PROMPT`
+  fact instead. **`SYSTEM_PROMPT`'s local-tools section names which shell
+  the LOCAL `bash` actually runs through** and that one remaining
+  array-indexing gotcha — not a straight port of ResearchMesh's own
+  paragraph, which also explains `/bin/sh` on the host (dropped here: only
+  relevant to writing a standalone `#!/bin/sh` script, a poor match for this
+  router's own bash usage, which the prompt itself frames as local
+  bookkeeping rather than primary work). This is scoped strictly to the
+  router's own local `bash` — it says nothing about any worker's shell,
+  which is a separate, per-worker fact.
 - **TLS to a worker needs nothing here.** An `https://` url just works:
   `create_mcp_http_client` exposes no `verify` parameter to plumb, and none is
   needed, because httpx2 defaults to `truststore.SSLContext` — the OS trust

@@ -12,7 +12,7 @@ Requires:  pip install pexpect
 import asyncio
 import json
 
-from core.claude_learned_schemas import SHELL_EXECUTABLE
+from core.claude_learned_schemas import SHELL_EXECUTABLE, apply_shell_prelude
 from core.output import clip
 
 TOOLS = [
@@ -121,7 +121,7 @@ def _run(tool_input: dict) -> str:
     try:
         child = pexpect.spawn(
             SHELL_EXECUTABLE,
-            ["-c", command],
+            ["-c", apply_shell_prelude(command)],
             encoding="utf-8",
             codec_errors="replace",
             timeout=timeout,

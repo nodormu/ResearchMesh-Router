@@ -102,6 +102,45 @@ def _resolve_sh_target() -> str:
 
 SH_TARGET = _resolve_sh_target()
 
+# Neutralizes the two behavioral differences zsh has from bash/sh that would
+# otherwise silently change what a command does: SH_WORD_SPLIT restores
+# bash-style word-splitting of an unquoted "$var" (zsh doesn't split by
+# default), and unsetting NOMATCH restores bash's "pass an unmatched glob
+# through literally" behavior (zsh hard-errors on one by default). Confirmed
+# against zsh's own FAQ/documentation, not assumed: these are exactly the
+# two options zsh's own maintainers document as "the classic differences"
+# from bash (https://zsh.sourceforge.io/FAQ/zshfaq02.html,
+# https://zsh.sourceforge.io/FAQ/zshfaq03.html) -- the same fix
+# core/zsh.py already uses in the macOS fork of this project, ported here
+# after independently verifying it against zsh's own docs rather than
+# trusting that (untested-on-real-hardware) implementation as ground truth.
+#
+# Deliberately NOT also using KSH_ARRAYS to neutralize the one remaining
+# gap (zsh arrays are 1-indexed, bash's are 0-indexed): that option bundles
+# in side effects beyond the index base -- an unsubscripted $array starts
+# meaning only the first element instead of the whole array, and braces
+# become REQUIRED for subscripts/modifiers that don't need them in plain
+# zsh ($path[2] stops working, ${path[2]} is required) -- trading one
+# divergence for a different, more syntactically invasive one. Left as a
+# documented fact in SYSTEM_PROMPT (core/chat.py) instead of patched here.
+_ZSH_PRELUDE = "setopt SH_WORD_SPLIT; unsetopt NOMATCH"
+
+
+def apply_shell_prelude(command: str) -> str:
+    """Prepend the zsh prelude above if SHELL_EXECUTABLE resolves to zsh,
+    otherwise return `command` unchanged. Shared with core/processes.py
+    (imported, not duplicated) so `bash` and `interactive_run` can't drift
+    out of sync the way SHELL_EXECUTABLE itself once did before both
+    tools were pointed at the same constant.
+
+    Newline-joined rather than "; "-joined so a command that opens with
+    its own `#` comment or its own statement isn't swallowed by a leading
+    separator -- same reasoning core/zsh.py's prelude already uses.
+    """
+    if Path(SHELL_EXECUTABLE).name != "zsh":
+        return command
+    return f"{_ZSH_PRELUDE}\n{command}"
+
 
 def handles(name: str) -> bool:
     return name in _LOCAL
@@ -127,7 +166,7 @@ def _run_bash(tool_input: dict) -> str:
         return "Error: no command provided"
     try:
         result = subprocess.run(
-            command,
+            apply_shell_prelude(command),
             shell=True,
             executable=SHELL_EXECUTABLE,
             capture_output=True,

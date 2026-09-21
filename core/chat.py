@@ -79,12 +79,12 @@ actually declares rather than assuming a client like this one typically ships on
 
 The LOCAL `bash` runs commands through **{_SHELL_EXECUTABLE_NAME}** ({SHELL_EXECUTABLE})
 — not necessarily bash despite the tool's name, configurable via config.toml's
-`[bash].shell`. Write commands for whichever shell is named, not blindly for bash: if
-it says `zsh`, it does NOT word-split unquoted variables by default the way bash/dash
-do, and array indices are 1-based instead of 0-based. Ordinary POSIX/bash syntax is
-safe if it says `bash` or `dash`. This is purely local — it says nothing about any
-worker's own shell, which may differ machine to machine and is a separate fact you'd
-have to ask that worker about if it ever mattered.
+`[bash].shell`. If it's `zsh`, a prelude already neutralizes unquoted `$var`
+word-splitting and unmatched-glob hard errors, so ordinary bash syntax is safe as
+written — the one real difference left is that zsh array indices are 1-based
+instead of 0-based. This is purely local — it says nothing about any worker's own
+shell, which may differ machine to machine and is a separate fact you'd have to ask
+that worker about if it ever mattered.
 
 Every machine has its own copy of the local capabilities. `python` here is not the
 kernel a worker uses; `browser_navigate` here is not a worker's browser page;
