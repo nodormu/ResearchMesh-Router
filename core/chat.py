@@ -1,12 +1,26 @@
 import os
 from collections.abc import Mapping
+from pathlib import Path
 
 from anthropic.types import MessageParam, ToolResultBlockParam
 from mcp.types import TextContent
 
 from core import local_tools
 from core.claude import Claude
+from core.claude_learned_schemas import SHELL_EXECUTABLE
 from core.tools import ToolIndex, ToolManager, Worker
+
+# Human-facing name of the interpreter the LOCAL `bash` tool actually runs
+# commands through (e.g. "bash", "zsh") — resolved once at import time from
+# SHELL_EXECUTABLE (core/claude_learned_schemas.py, copied verbatim from
+# ResearchMesh, including why that constant isn't named BASH_SHELL).
+# Interpolated into SYSTEM_PROMPT below. Deliberately not importing SH_TARGET
+# here the way ResearchMesh's own chat.py does: that fact is only relevant to
+# writing a standalone #!/bin/sh script, which is a poor match for how this
+# router's own bash gets used (quick local bookkeeping, not primary work —
+# see SYSTEM_PROMPT's own guidance below), so it isn't worth the extra
+# prompt real estate here.
+_SHELL_EXECUTABLE_NAME = Path(SHELL_EXECUTABLE).name
 
 MAX_TOOL_ITERATIONS = 75
 
@@ -38,7 +52,7 @@ SHOW_USAGE = os.getenv("CLAUDE_SHOW_USAGE") == "1"
 # Before local tools were added this prompt could open with the much stronger
 # "you have no tools of your own". That sentence is now false, and the split
 # below replaces it: the namespacing is what tells local from remote apart.
-SYSTEM_PROMPT = """\
+SYSTEM_PROMPT = f"""\
 You are the router in a command-line client. You have two kinds of tools, and
 telling them apart is the first thing to get right on every call.
 
@@ -62,6 +76,15 @@ internally, which is likely where that instinct comes from, but that machinery
 lives inside those two tools, not as something callable on its own. The same
 absence holds for a worker unless its own tool list says otherwise — check what it
 actually declares rather than assuming a client like this one typically ships one.
+
+The LOCAL `bash` runs commands through **{_SHELL_EXECUTABLE_NAME}** ({SHELL_EXECUTABLE})
+— not necessarily bash despite the tool's name, configurable via config.toml's
+`[bash].shell`. Write commands for whichever shell is named, not blindly for bash: if
+it says `zsh`, it does NOT word-split unquoted variables by default the way bash/dash
+do, and array indices are 1-based instead of 0-based. Ordinary POSIX/bash syntax is
+safe if it says `bash` or `dash`. This is purely local — it says nothing about any
+worker's own shell, which may differ machine to machine and is a separate fact you'd
+have to ask that worker about if it ever mattered.
 
 Every machine has its own copy of the local capabilities. `python` here is not the
 kernel a worker uses; `browser_navigate` here is not a worker's browser page;

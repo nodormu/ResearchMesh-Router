@@ -1,6 +1,9 @@
 import asyncio
 import base64
+import os
+import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 from core.output import IMAGE_MEDIA_TYPES, clip, image_result
@@ -31,6 +34,74 @@ _LOCAL = {"bash", "str_replace_based_edit_tool"}
 
 _MAX_OUTPUT = 12000
 
+# --- bash tool shell selection -------------------------------------------
+# Ubuntu (confirmed live) and Debian (documented policy since Squeeze) point
+# /bin/sh at dash, not bash, so Python's shell=True default would silently
+# run commands under dash's stricter POSIX semantics instead of bash's.
+# Other Debian-derived distros likely inherit this, but that's an inference
+# from packaging lineage, not something verified here -- see SH_TARGET below
+# for how this is actually checked live rather than assumed per distro.
+# [bash].shell in config.toml lets the user pin whatever shell they actually
+# want (defaulting to /bin/bash, which is also a harmless no-op on distros
+# where /bin/sh is already bash, e.g. RHEL/Fedora/AlmaLinux). Resolved once
+# at import time — not per call — so it can never drift from the shell name
+# baked into SYSTEM_PROMPT in core/chat.py, which reads this same constant.
+#
+# Naming note: this is deliberately NOT called BASH_SHELL. Anthropic's
+# bash_20250124 tool schema requires its `name` field to be the literal
+# string "bash" (see BASH_TOOL below) -- that's a fixed, external API
+# contract, unrelated to which local interpreter actually executes the
+# commands it hands us. A constant called BASH_SHELL sitting next to
+# BASH_TOOL could read as if it must also always mean bash, and could
+# genuinely hold a zsh/dash path -- SHELL_EXECUTABLE keeps those two
+# separate concepts from bleeding into each other for whoever (or
+# whatever future coding session) reads this file next.
+_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.toml"
+_DEFAULT_SHELL = "/bin/bash"
+
+
+def _resolve_shell_executable() -> str:
+    try:
+        with open(_CONFIG_PATH, "rb") as f:
+            configured = tomllib.load(f).get("bash", {}).get("shell", "")
+    except (FileNotFoundError, tomllib.TOMLDecodeError):
+        configured = ""
+
+    configured = (configured or "").strip()
+    if not configured:
+        return _DEFAULT_SHELL
+
+    # Accept either an absolute path or a bare name resolved via $PATH.
+    resolved = configured if Path(configured).is_absolute() else shutil.which(configured)
+    if resolved and Path(resolved).is_file():
+        return resolved
+
+    # A bad/typo'd config value should never silently break the primary
+    # bash tool — fall back rather than raise.
+    return _DEFAULT_SHELL
+
+
+SHELL_EXECUTABLE = _resolve_shell_executable()
+
+
+def _resolve_sh_target() -> str:
+    """What /bin/sh actually points to on THIS machine, checked live.
+
+    Never hardcode this as a string literal in source/prompt text -- it
+    varies by distro (dash on Debian/Ubuntu, bash on many others) and a
+    literal baked in at write-time would ship a stale, potentially false
+    claim to every future clone of this repo running on a different box.
+    Recomputed fresh every process start so it's always accurate for
+    wherever this code actually happens to be running.
+    """
+    try:
+        return os.path.realpath("/bin/sh")
+    except OSError:
+        return "(unknown -- /bin/sh not found)"
+
+
+SH_TARGET = _resolve_sh_target()
+
 
 def handles(name: str) -> bool:
     return name in _LOCAL
@@ -58,7 +129,7 @@ def _run_bash(tool_input: dict) -> str:
         result = subprocess.run(
             command,
             shell=True,
-            executable="/bin/bash",
+            executable=SHELL_EXECUTABLE,
             capture_output=True,
             encoding="utf-8",
             errors="replace",

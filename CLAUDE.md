@@ -526,6 +526,23 @@ worker MCP tools**.
   8), and `max_duration_seconds` (safety cap regardless of what was requested;
   default 30). Entirely commented out by default, same as `[speak]` above.
   Read fresh from disk on every call.
+- **`[bash]` in config.toml** — `shell`: the interpreter both `bash`
+  (`core/claude_learned_schemas.py`) and `interactive_run`
+  (`core/processes.py`) actually execute commands through — both files, and
+  this mechanism itself, copied verbatim from ResearchMesh (absolute path or
+  bare name via `$PATH`; default `/bin/bash`, same fallback if
+  unset/blank/unresolvable). Resolved once at import, not fresh per call.
+  Ships un-commented with the safe default here, unlike `[speak]`/`[listen]`
+  above — `/bin/bash` needs no hardware-specific value to be usable, so there
+  is nothing to withhold. **`SYSTEM_PROMPT`'s local-tools section names
+  which shell the LOCAL `bash` actually runs through**, and the zsh-specific
+  word-splitting/1-indexed-array gotchas if it isn't bash — not a straight
+  port of ResearchMesh's own paragraph, which also explains `/bin/sh` on the
+  host (dropped here: only relevant to writing a standalone `#!/bin/sh`
+  script, a poor match for this router's own bash usage, which the prompt
+  itself frames as local bookkeeping rather than primary work). This is
+  scoped strictly to the router's own local `bash` — it says nothing about
+  any worker's shell, which is a separate, per-worker fact.
 - **TLS to a worker needs nothing here.** An `https://` url just works:
   `create_mcp_http_client` exposes no `verify` parameter to plumb, and none is
   needed, because httpx2 defaults to `truststore.SSLContext` — the OS trust

@@ -31,6 +31,21 @@ claude_models = ["claude-sonnet-5", "claude-fable-5-1", "claude-opus-5", "claude
 model_scan_ttl_hours = 24
 claude_models_checked_at = "2026-09-17T20:29:41.757876+00:00"
 
+[bash]
+# Shell the `bash` tool runs commands through (subprocess.run's `executable=`
+# under shell=True). Absolute path or a bare name resolved via $PATH. Falls
+# back to /bin/bash if unset, blank, or unresolvable.
+#
+# Exists because Python's shell=True defaults to /bin/sh, which is dash (not
+# bash) on Ubuntu/Debian — silently breaking bash-only syntax ([[ ]],
+# process substitution, arrays) if left unpinned. No-op on distros where
+# /bin/sh is already bash (RHEL/Fedora/AlmaLinux).
+#
+# Override to whatever shell you actually want, e.g. "/usr/bin/zsh" or
+# "zsh" — note zsh doesn't word-split unquoted variables by default the way
+# bash/dash do. Resolved once at process start — restart to pick up a change.
+shell = "/bin/bash"
+
 [router]
 # How many workers may be busy at the same time.
 #
