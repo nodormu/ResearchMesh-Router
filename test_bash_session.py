@@ -17,6 +17,8 @@ calls `bash_session.shutdown()` at the end — no real dependency beyond
 """
 
 import asyncio
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -284,6 +286,130 @@ async def check_restart(bs) -> None:
     check("env var did NOT survive restart", "should_not_survive" not in r.get("output", ""), str(r))
 
 
+async def check_zsh_support(bs) -> None:
+    """`[bash].shell` can be pointed at zsh, and bash_session already
+    imports SHELL_EXECUTABLE/apply_shell_prelude from the same place the
+    stateless `bash` tool does -- so zsh reaches this module today, not
+    hypothetically. It used to be badly broken there: two real,
+    independent bugs, both found live against a real zsh 5.9, neither
+    exercised by the bash-only checks above since bash's pty session
+    (echo=False) never echoes input at all, which is what let both bugs
+    hide.
+
+    Bug 1 (spawn hang): zsh's line editor (ZLE) redraws every line with
+    backspace sequences this module's ANSI stripping doesn't handle --
+    fixed via `unsetopt zle`. But ZLE is still the active reader for
+    whatever line turns it off, so folding that into the SAME multi-line
+    sendline() as the rest of _spawn()'s priming left the remainder
+    unread in the pty buffer, genuinely hanging forever (reproduced
+    directly). Fixed by sending it as its own round-trip first.
+
+    Bug 2 (recovery-path corruption): zsh's non-ZLE fallback reader still
+    echoes input back, even with ZLE off. _handle_timeout()'s recovery
+    command used to hardcode the literal digits ":130" in its own printf
+    SOURCE rather than a %d placeholder + variable -- so that fully-formed
+    sentinel pattern showed up in the ECHO of the command, and expect()
+    matched it there, before the command even ran. The real completion
+    then bled into the NEXT call's capture (wrong return_code, garbage
+    output). Fixed by using the same %d-not-literal-digits shape the main
+    per-call path already used.
+
+    Skips cleanly (not a failure) if zsh isn't installed -- this is
+    coverage for an optional, opt-in shell choice, not a hard dependency.
+    """
+    print("zsh support ([bash].shell = zsh) -- both bugs above, fixed")
+
+    zsh_path = shutil.which("zsh") or (
+        "/usr/bin/zsh" if os.path.isfile("/usr/bin/zsh") else None
+    )
+    if not zsh_path:
+        print("  skip  zsh not installed on this machine -- nothing to test")
+        return
+
+    # Simulate what a fresh import would compute with [bash].shell=zsh --
+    # _IS_ZSH/_PS1_RESET/_ZSH_SESSION_PRELUDE are derived once at import
+    # time in the real module, so a live monkeypatch has to override all
+    # three together, not just SHELL_EXECUTABLE itself.
+    orig = (bs.SHELL_EXECUTABLE, bs._IS_ZSH, bs._PS1_RESET, bs._ZSH_SESSION_PRELUDE)
+    await bs.shutdown()  # drop the existing bash-backed shell first
+    bs.SHELL_EXECUTABLE = zsh_path
+    bs._IS_ZSH = True
+    bs._PS1_RESET = "precmd() { PS1=''; }"
+    bs._ZSH_SESSION_PRELUDE = "unsetopt zle promptcr promptsp\n"
+
+    try:
+        r = await run(bs, "export ZSH_MARK=zsh_state_ok; echo hello_from_zsh")
+        check(
+            "basic command runs cleanly under zsh (no ZLE redraw corruption)",
+            "hello_from_zsh" in r.get("output", "")
+            and "PPS1" not in r.get("output", "")
+            and "print ff" not in r.get("output", ""),
+            str(r),
+        )
+
+        # The worst case: a command changes PS1 directly AND redefines
+        # zsh's own precmd hook to something that would leak -- mirrors
+        # bash's conda/direnv-stomp scenario exactly.
+        await run(
+            bs,
+            "PS1='LEAK_MARKER_$$ '; precmd() { PS1='STILL_LEAKING'; }; "
+            "echo stomped",
+        )
+        r = await run(bs, "echo zsh_leak_check")
+        check(
+            "PS1/precmd stomp does not leak into the next call",
+            "LEAK_MARKER" not in r.get("output", "")
+            and "STILL_LEAKING" not in r.get("output", ""),
+            str(r),
+        )
+
+        # Plain Ctrl-C recovery -- this exact scenario is what exposed
+        # Bug 2 above (a stale ":130" bleeding into this exact follow-up).
+        r = await run(bs, "sleep 30", timeout=2)
+        check("zsh: reports timed_out", r.get("timed_out") is True, str(r))
+        check(
+            "zsh: plain recovery, not escalated",
+            r.get("recovered") is True and r.get("force_killed") is False,
+            str(r),
+        )
+        r2 = await run(bs, "echo ZSH_MARK=$ZSH_MARK")
+        check(
+            "zsh: state survived plain recovery (proves no stale-byte bleed)",
+            "ZSH_MARK=zsh_state_ok" in r2.get("output", ""),
+            str(r2),
+        )
+        check(
+            "zsh: exit code fidelity intact after recovery (not the stale 130)",
+            r2.get("return_code") == 0,
+            str(r2),
+        )
+
+        # Escalated recovery: a SIGINT-ignoring process, raw-mode-like.
+        r = await run(
+            bs,
+            "python3 -c \"import signal,time; "
+            "signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(9999)\"",
+            timeout=4,
+        )
+        check("zsh: escalation reports recovered", r.get("recovered") is True, str(r))
+        check("zsh: escalation reports force_killed", r.get("force_killed") is True, str(r))
+        r2 = await run(bs, "echo zsh_post_escalation_ok; false; echo rc=$?")
+        check(
+            "zsh: genuinely responsive after escalation, not just self-reported",
+            "zsh_post_escalation_ok" in r2.get("output", ""),
+            str(r2),
+        )
+        check(
+            "zsh: exit code fidelity intact after escalated recovery",
+            "rc=1" in r2.get("output", "") and r2.get("return_code") == 0,
+            str(r2),
+        )
+    finally:
+        # Leave the module exactly as later/earlier steps expect it.
+        await bs.shutdown()
+        bs.SHELL_EXECUTABLE, bs._IS_ZSH, bs._PS1_RESET, bs._ZSH_SESSION_PRELUDE = orig
+
+
 async def _run_all() -> int:
     sys.path.insert(0, str(ROOT))
     from core import bash_session as bs
@@ -301,6 +427,7 @@ async def _run_all() -> int:
             check_timeout_and_recovery,
             check_raw_mode_program_recovery,
             check_restart,
+            check_zsh_support,
         ):
             await step(bs)
             print()

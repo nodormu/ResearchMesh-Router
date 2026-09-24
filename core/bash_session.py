@@ -16,6 +16,25 @@ the same still-open construct as the command itself, so a command that
 changes the prompt (a venv/conda/direnv activation) can't leak prompt text
 into the output — see the reset in `_run()` for the mechanism.
 
+Reuses `SHELL_EXECUTABLE`/`apply_shell_prelude` from
+core/claude_learned_schemas.py, so `[bash].shell = "zsh"` reaches this
+module too, not just the stateless `bash` tool — but zsh needs two real,
+zsh-specific fixes beyond that shared prelude, both found live against a
+real zsh 5.9 and both invisible on bash's own pty session (which never
+echoes input back at all, unlike zsh): `_ZSH_SESSION_PRELUDE` disables
+zsh's line editor (which otherwise redraws every line with backspace
+sequences this module's ANSI stripping can't handle) and two cosmetic
+prompt options, sent as its own round-trip before anything else *because*
+folding it into the same multi-line send as the rest of `_spawn()`'s
+priming left the remainder unread forever, since ZLE was still the active
+reader for that first line; and `_PS1_RESET` resolves to a `precmd()`
+function on zsh instead of `PROMPT_COMMAND` (which zsh has no concept of
+at all), with the same load-bearing timing — only consulted before a NEW
+top-level prompt, never mid-compound-construct — that makes the brace-
+group trick close the leak there too, verified against the same worst-case
+stomp (a command changing PS1 *and* redefining the reset mechanism itself)
+the bash path already handles.
+
 Not a replacement for `bash`: use plain `bash` for one-off commands, this
 for anything that needs state to survive across multiple calls. Also not a
 replacement for `interactive_run` — a foreground command that blocks on
@@ -50,9 +69,48 @@ import os
 import re
 import signal
 import uuid
+from pathlib import Path
 
 from core.claude_learned_schemas import SHELL_EXECUTABLE, apply_shell_prelude
 from core.output import clip
+
+# Same zsh check apply_shell_prelude() already makes internally, computed
+# here too since the PS1-leak defense below needs a genuinely different
+# mechanism on zsh, not just an extra prelude line.
+_IS_ZSH = Path(SHELL_EXECUTABLE).name == "zsh"
+
+# bash/ksh's PROMPT_COMMAND has no zsh equivalent by that name — confirmed
+# live (real zsh 5.9, not assumed): `zsh -c 'echo ${(t)PROMPT_COMMAND}'`
+# reports it as completely unset/untyped, so the bash form of this reset is
+# silently inert there, and a real PS1 leak was reproduced live as a direct
+# result. zsh calls a `precmd` function instead, with the same load-bearing
+# timing PROMPT_COMMAND has in bash — only before a NEW top-level prompt,
+# never mid-compound-construct — so redefining it at the end of the same
+# brace group a caller's command runs in wins even against a command that
+# stomps PS1 *and* redefines precmd itself, exactly mirroring the bash
+# conda/direnv-stomp case this same trick already handles there. Verified
+# live: that exact worst case leaked zero characters into the next call.
+_PS1_RESET = "precmd() { PS1=''; }" if _IS_ZSH else "PROMPT_COMMAND='PS1=\"\"'"
+
+# zsh-only spawn-time priming, prepended ahead of everything else so it's
+# already in effect before any real command runs. No-op string on bash.
+#   unsetopt zle     -- fixes a real, confirmed-live corruption bug: zsh's
+#                        line editor (ZLE) redraws every line with backspace
+#                        sequences ("e\x08echo ...") that this module's ANSI
+#                        stripping doesn't handle (bash's readline doesn't do
+#                        this in a non-interactive-feeling pty), which
+#                        visibly mangled command text before this fix (e.g.
+#                        "printf" arriving as "print ff"). Once unset, zsh
+#                        falls back to a plain, non-redrawing line reader for
+#                        every command after the one that unset it — which is
+#                        why this has to be the very first thing sent.
+#   promptcr promptsp -- purely cosmetic, not a correctness fix: removes
+#                        zsh's PROMPT_EOL_MARK ("%" printed when the last
+#                        output didn't end in a newline) and the right-edge
+#                        padding it triggers, for byte-for-byte parity with
+#                        bash's fully blank prompt instead of stray noise on
+#                        every call.
+_ZSH_SESSION_PRELUDE = "unsetopt zle promptcr promptsp\n" if _IS_ZSH else ""
 
 # A bare interactive shell loads the user's own ~/.bashrc in full, which on
 # most distros (confirmed live here) sets a colored PS1, an OSC window-title
@@ -193,10 +251,23 @@ def _spawn() -> str | None:
         # not unset — see the matching per-call reset in `_run()` below for
         # why (bash runs PROMPT_COMMAND immediately before printing each
         # prompt, which is what closes the PS1-leak race).
+        if _ZSH_SESSION_PRELUDE:
+            # Sent as its own round-trip, not folded into the combined
+            # priming line below — confirmed live this is load-bearing, not
+            # just tidiness: zsh's line editor (ZLE) is still the active
+            # reader for THIS line, and turning it off mid-line leaves the
+            # rest of a single multi-line sendline() sitting unread in the
+            # pty's buffer, genuinely hanging the next expect() forever
+            # (reproduced directly before splitting this out). Waiting for
+            # this line's own echo first guarantees zsh has already
+            # switched to its plain, non-ZLE reader before anything else is
+            # sent.
+            shell.sendline(_ZSH_SESSION_PRELUDE.rstrip("\n"))
+            shell.expect_exact(_ZSH_SESSION_PRELUDE.rstrip("\n"), timeout=_DEFAULT_TIMEOUT)
         primed = apply_shell_prelude("true")
         shell.sendline(
             "bind 'set enable-bracketed-paste off' 2>/dev/null; "
-            "PROMPT_COMMAND='PS1=\"\"'; PS2=''\n"
+            f"{_PS1_RESET}; PS2=''\n"
             f"{primed}\nprintf '\\n{_sentinel}:%d\\n' $?"
         )
         shell.expect(_sentinel_pattern(), timeout=_DEFAULT_TIMEOUT)
@@ -263,7 +334,7 @@ def _run(tool_input: dict) -> str:
         _shell.sendline(
             "{\n"
             f"{command}\n"
-            f"__rc_{_sentinel}=$?; PROMPT_COMMAND='PS1=\"\"'; PS2=''; "
+            f"__rc_{_sentinel}=$?; {_PS1_RESET}; PS2=''; "
             f"printf '\\n{_sentinel}:%d\\n' $__rc_{_sentinel}\n"
             "}"
         )
@@ -391,8 +462,19 @@ def _handle_timeout() -> dict:
         _shell.sendcontrol("c")
         _shell.sendline(
             "{\n"
-            f"PROMPT_COMMAND='PS1=\"\"'; PS2=''; "
-            f"printf '\\n{_sentinel}:130\\n'\n"
+            f"{_PS1_RESET}; PS2=''; "
+            # 130 via a variable + %d, not a literal digit sequence in the
+            # printf source itself — load-bearing, not style: a shell that
+            # echoes its input back (zsh's non-ZLE reader does, even with
+            # ZLE off; bash's pty session with echo=False does not) would
+            # otherwise let expect() match the sentinel pattern INSIDE that
+            # echo, before this command has even run. Confirmed live: a
+            # hardcoded ":130" here caused exactly that under zsh, matching
+            # on the echoed source and leaving this command's real
+            # execution (and its real completion marker) to bleed into the
+            # NEXT call's capture instead. Mirrors the same %d-not-literal
+            # shape the main per-call path in `_run()` already uses.
+            f"__rc_{_sentinel}=130; printf '\\n{_sentinel}:%d\\n' $__rc_{_sentinel}\n"
             "}"
         )
         _shell.expect(_sentinel_pattern(), timeout=_RECOVERY_TIMEOUT)
