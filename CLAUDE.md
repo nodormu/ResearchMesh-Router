@@ -560,7 +560,11 @@ worker MCP tools**.
   — including two zsh-specific fixes ported alongside this file (a real spawn-time
   hang and a recovery-path corruption bug, both found live against a real zsh;
   see the module's own docstring, `_PS1_RESET` swaps in a `precmd()`-based
-  mechanism there since zsh has no `PROMPT_COMMAND` at all).
+  mechanism there since zsh has no `PROMPT_COMMAND` at all) and a dash fix
+  (Ubuntu/Debian's real `/bin/sh`): dash has no prompt-hook mechanism at all,
+  so `_PS1_RESET` there is a plain `PS1=''` instead — simpler than zsh's fix,
+  since there's no hook for a stomping command to re-arm. fish/tcsh/ksh were
+  evaluated and found to hang or need incompatible syntax — not supported.
   Module-level singleton shell; each command plus a `PROMPT_COMMAND='PS1=""'`
   reset plus a `printf` sentinel+`$?` are sent as ONE brace group, not separate
   lines — bash only consults `PROMPT_COMMAND` between top-level reads, never
