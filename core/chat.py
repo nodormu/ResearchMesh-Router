@@ -347,6 +347,81 @@ def _excise_dangling_blocks(messages, ids: set[str]) -> int:
     return removed
 
 
+def _answer_orphaned_client_tool_uses(
+    messages, client_ids: list[str], content: str
+) -> None:
+    """Mutates `messages` in place: answers each id in `client_ids` with a
+    synthetic error `tool_result`, placed so it is genuinely part of the
+    message immediately following the specific message that holds that
+    tool_use — never simply appended to the tail of `messages`.
+
+    Ported from ResearchMesh core/chat.py — same underlying bug found and
+    fixed there: appending to the tail (the previous behavior here too, via
+    `claude_service.add_user_message`) is only correct if the orphan happens
+    to already be the very last thing in the conversation. It silently stops
+    being correct the moment anything else has already been appended after
+    the orphaning message — most commonly a plain new user query, added by
+    `run()`'s own next call before this repair ever runs. Confirmed live in
+    production on ResearchMesh (this router's sibling client, same
+    core/chat.py lineage): the repair ran, reported success ("answered 1
+    orphaned tool_use block"), and the retried request 400'd on the exact
+    same id it had supposedly just answered — because the synthetic result
+    landed one message too late, still leaving the tool_use followed by a
+    plain user-text message instead of its own answer. Reproduced exactly
+    outside production too (`_orphaned_tool_uses` came back empty after
+    that "successful" repair — it only checks "answered somewhere later,"
+    not the API's actual stricter "immediately after" rule, which is why
+    the old code believed it had fixed something it hadn't).
+
+    If the message right after the orphaning one is already a `user`
+    message, the synthetic result(s) are merged into the FRONT of its
+    existing content (mixing tool_result blocks with other content in one
+    user turn is a normal, documented shape) — this also avoids ever
+    creating two consecutive `user`-role messages. Only if there is no
+    following message at all is a new one inserted, matching the original
+    behavior for the case it was actually correct for.
+
+    Groups ids by which message actually holds them (usually one, but not
+    guaranteed) and processes messages back-to-front so an earlier
+    insertion never shifts the index of a later one out from under it.
+    """
+    if not client_ids:
+        return
+    orphan_set = set(client_ids)
+    by_index: dict[int, list[str]] = {}
+    for idx, message in enumerate(messages):
+        content_list = message.get("content")
+        if not isinstance(content_list, list):
+            continue
+        for block in content_list:
+            if _block_field(block, "type") != "tool_use":
+                continue
+            block_id = _block_field(block, "id")
+            if block_id in orphan_set:
+                by_index.setdefault(idx, []).append(block_id)
+
+    for idx in sorted(by_index, reverse=True):
+        results = [
+            {
+                "type": "tool_result",
+                "tool_use_id": i,
+                "content": content,
+                "is_error": True,
+            }
+            for i in by_index[idx]
+        ]
+        next_idx = idx + 1
+        if next_idx < len(messages) and messages[next_idx].get("role") == "user":
+            existing = messages[next_idx].get("content")
+            if isinstance(existing, str):
+                existing = [{"type": "text", "text": existing}]
+            elif not isinstance(existing, list):
+                existing = []
+            messages[next_idx]["content"] = results + existing
+        else:
+            messages.insert(next_idx, {"role": "user", "content": results})
+
+
 def _approx_size(messages) -> tuple[int, int]:
     """(message count, character count) for the conversation.
 
@@ -511,16 +586,9 @@ class Chat:
         """
         client_ids, server_ids = _classify_orphans(self.messages)
         if client_ids:
-            results = [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": i,
-                    "content": f"[{reason}]",
-                    "is_error": True,
-                }
-                for i in client_ids
-            ]
-            self.claude_service.add_user_message(self.messages, results)
+            _answer_orphaned_client_tool_uses(
+                self.messages, client_ids, f"[{reason}]"
+            )
         base = f"[{reason}]"
         if server_ids:
             _excise_dangling_blocks(self.messages, set(server_ids))
@@ -629,16 +697,11 @@ class Chat:
 
         client_ids, server_ids = _classify_orphans(self.messages)
         if client_ids:
-            results = [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": i,
-                    "content": "[repaired: this tool_use was never answered]",
-                    "is_error": True,
-                }
-                for i in client_ids
-            ]
-            self.claude_service.add_user_message(self.messages, results)
+            _answer_orphaned_client_tool_uses(
+                self.messages,
+                client_ids,
+                "[repaired: this tool_use was never answered]",
+            )
             repairs.append(
                 f"answered {len(client_ids)} orphaned tool_use block"
                 f"{'s' if len(client_ids) != 1 else ''}"
@@ -992,6 +1055,26 @@ class Chat:
                     final_text_response = "[stopped: exceeded tool-iteration limit]"
                     break
                 continue
+
+            # Anything else (end_turn, stop_sequence, and critically
+            # max_tokens) falls through here. A max_tokens cutoff that hit
+            # mid-tool_use — e.g. a single large `create` call whose file
+            # content ran past the token budget — still gets its content
+            # appended above like any other assistant turn, tool_use block
+            # included, but stop_reason is "max_tokens", not "tool_use", so
+            # nothing above ever routed/answered it. Left alone, that
+            # tool_use sits unresolved past the end of this run() call and
+            # poisons every later turn (ported from ResearchMesh core/chat.py
+            # — see that repo's dev log for the full incident). Re-check the
+            # live message list rather than trusting stop_reason alone, and
+            # finalize instead of returning as if this were an ordinary
+            # finished turn.
+            if _orphaned_tool_uses(self.messages):
+                final_text_response = self._finalize_turn(
+                    f"stopped: response ended early (stop_reason="
+                    f"{response.stop_reason!r}) with an unresolved tool_use"
+                )
+                break
 
             final_text_response = self.claude_service.text_from_message(
                 response

@@ -273,9 +273,19 @@ worker MCP tools**.
   - **No `budget_tokens`.** Adaptive thinking replaced it; the 4.5-era
     `{"type": "enabled", "budget_tokens": N}` is now a 400. The depth knob, if
     ever needed, is `output_config={"effort": …}`.
-  - **`max_tokens=8000` is shared by thinking and the reply**, so a `/think`
-    turn on a hard problem can end on `stop_reason: "max_tokens"`. Raise it if
-    that bites; streaming becomes advisable much above ~16K.
+  - **`max_tokens=20000`** (raised from 8000 — ported from ResearchMesh
+    core/claude.py; see that repo's dev log for the full incident: an 8000
+    cap let a single large `create` tool call, or a hard `/think` turn, get
+    cut off by `max_tokens` mid-tool_use, leaving an unanswered `tool_use`
+    block that poisoned every later turn) **is shared by thinking and the
+    reply** — no separate thinking budget on these models. 20000 stays
+    comfortably under the SDK's own ~21,333-token non-streaming ceiling
+    (`self.client = Anthropic()` has no explicit `timeout=`, so
+    `client.messages.create` raises "Streaming is required for operations
+    that may take longer than 10 minutes" above that) — deliberately NOT
+    raised further / switched to streaming, since that would need real
+    rework of how `response.content`/`stop_reason`/`usage` are read as one
+    static object throughout `core/chat.py`.
   - **Prompt caching fails silently.** A prefix under the model's minimum
     (1024 tokens on Sonnet 5) simply isn't cached, with no error, and any byte
     change early in the prefix invalidates everything after it.

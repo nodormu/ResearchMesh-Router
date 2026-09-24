@@ -933,6 +933,132 @@ def check_run_loop_tool_use_lifecycle() -> None:
             "normal multi-round: real final answer returned",
             result6 == "done for real", result6,
         )
+
+        # --- 7: cross-turn orphan repair must satisfy the API's REAL
+        # "immediately after" adjacency rule, not just "answered somewhere
+        # later" (which is all `_orphaned_tool_uses` itself checks). Ported
+        # from ResearchMesh's smoke_test.py alongside the core/chat.py fix
+        # that closes this exact gap — same bug class, same root cause: a
+        # tool_use orphan survived to the start of a brand new turn
+        # (nothing else after it yet), `run()` appended the new user query
+        # first as always, the OLD repair then answered the orphan by
+        # appending to the tail — one message too late, since the new query
+        # was already sitting between the tool_use and the synthetic
+        # result. The retry 400'd on the *same* id the repair had just
+        # "fixed". `FakeClaudeService` above never catches this class of
+        # bug because it only pops a canned script — it never actually
+        # validates the message shape it's handed. This scenario uses a
+        # stricter fake that does, so a regression here fails loudly
+        # instead of shipping unnoticed again.
+        class FakeClaudeServiceStrictAdjacency(FakeClaudeService):
+            def chat(self, messages, system=None, stop_sequences=None,
+                      tools=None, thinking=False):
+                # Count this as a real request attempt regardless of
+                # whether the adjacency check below rejects it -- matches
+                # how the real API counts a 400 as a call that happened,
+                # not a call that never occurred.
+                self.calls += 1
+                for idx, message in enumerate(messages):
+                    content = message.get("content")
+                    if not isinstance(content, list):
+                        continue
+                    for block in content:
+                        kind = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+                        if not (kind == "tool_use" or (kind and kind.endswith("_tool_use"))):
+                            continue
+                        tool_id = block.get("id") if isinstance(block, dict) else getattr(block, "id", None)
+                        nxt = messages[idx + 1] if idx + 1 < len(messages) else None
+                        nxt_content = nxt.get("content") if nxt else None
+                        answered = False
+                        if isinstance(nxt_content, list):
+                            for b2 in nxt_content:
+                                k2 = b2.get("type") if isinstance(b2, dict) else getattr(b2, "type", None)
+                                u2 = b2.get("tool_use_id") if isinstance(b2, dict) else getattr(b2, "tool_use_id", None)
+                                if k2 and (k2 == "tool_result" or k2.endswith("_tool_result")) and u2 == tool_id:
+                                    answered = True
+                        if not answered:
+                            raise RuntimeError(
+                                f"messages.{idx}: `tool_use` ids were found "
+                                f"without `tool_result` blocks immediately "
+                                f"after: {tool_id}."
+                            )
+                # Deliberately not `super().chat()` -- that would double
+                # count `self.calls`, already incremented above.
+                item = self._script.pop(0)
+                if isinstance(item, Exception):
+                    raise item
+                return item
+
+        chat_mod.MAX_TOOL_ITERATIONS = 75
+        orphan_id7 = "toolu_01R17MvTSHSQAYxEyHpvNjrK"
+        fake7 = FakeClaudeServiceStrictAdjacency([
+            FakeResponse("end_turn", [FakeBlock("text", text="all better now")]),
+        ])
+        c7 = Chat(claude_service=fake7, clients={})  # type: ignore[arg-type]
+        # The orphan sitting as the very last message -- e.g. the previous
+        # turn ended on a max_tokens cutoff mid tool_use (see scenario 8
+        # below for why that specific trigger no longer even reaches this
+        # state anymore -- this scenario proves the repair itself is
+        # correct independent of how the orphan got there).
+        c7.messages = [
+            {"role": "user", "content": "write core/zsh_session.py"},
+            {"role": "assistant", "content": "Let me write it."},
+            {
+                "role": "assistant",
+                "content": [FakeBlock("tool_use", id=orphan_id7, name="str_replace_based_edit_tool", input={})],  # type: ignore[list-item]
+            },
+        ]
+        result7 = asyncio.run(c7.run("you froze up again, can you continue"))
+        check(
+            "cross-turn repair: exactly one retry needed, not a repeated 400",
+            fake7.calls == 2, str(fake7.calls),
+        )
+        check(
+            "cross-turn repair: no orphan left behind",
+            not _orphaned_tool_uses(c7.messages),
+        )
+        check(
+            "cross-turn repair: retried request's real answer returned",
+            "all better now" in result7, result7,
+        )
+
+        # --- 8: a max_tokens cutoff mid tool_use must finalize the turn
+        # immediately, not silently return as if it were an ordinary
+        # finished response. Ported alongside scenario 7 -- this is the
+        # actual root trigger behind that scenario's bug class in
+        # production: a single large `create` call (a whole new source
+        # file as one tool_use) ran past the output token budget,
+        # `stop_reason` came back "max_tokens" (not "tool_use"), and the
+        # old code only ever routed/answered tool_use blocks when
+        # `stop_reason == "tool_use"` -- so the dangling block was
+        # appended to history and then just ignored, left to poison every
+        # later turn.
+        chat_mod.MAX_TOOL_ITERATIONS = 75
+        orphan_id8 = "toolu_FRESHCUTOFF"
+        fake8 = FakeClaudeService([
+            FakeResponse("max_tokens", [
+                FakeBlock("text", text="Let me write core/zsh_session.py"),
+                FakeBlock("tool_use", id=orphan_id8, name="str_replace_based_edit_tool", input={}),
+            ]),
+        ])
+        c8 = Chat(claude_service=fake8, clients={})  # type: ignore[arg-type]
+        result8 = asyncio.run(c8.run("write core/zsh_session.py"))
+        check(
+            "max_tokens cutoff: exactly one call, no silent second round trip",
+            fake8.calls == 1, str(fake8.calls),
+        )
+        check(
+            "max_tokens cutoff: no orphan left behind",
+            not _orphaned_tool_uses(c8.messages),
+        )
+        check(
+            "max_tokens cutoff: does NOT silently return as if finished",
+            "all resolved" not in result8 and result8 != "",
+        )
+        check(
+            "max_tokens cutoff: reports the real cause, not a bare empty reply",
+            "max_tokens" in result8 or "unresolved tool_use" in result8, result8,
+        )
     finally:
         chat_mod.local_tools.execute = orig_execute
         chat_mod.ToolManager.build = orig_build  # type: ignore[method-assign]

@@ -291,7 +291,24 @@ class Claude:
         # except fail. Steer behaviour with the system prompt instead.
         params = {
             "model": self.model,
-            "max_tokens": 8000,
+            # Shared between adaptive thinking and the visible reply/tool_use
+            # (no separate thinking budget on these models). 20000 rather
+            # than the old 8000: a single large `create` tool call (e.g. a
+            # whole new source file) or a hard /think turn could both blow
+            # past 8000 and get cut off by max_tokens mid-tool_use, which
+            # left an unanswered tool_use block in history and poisoned
+            # every later turn — ported from ResearchMesh core/claude.py,
+            # see that repo's dev log for the full incident. 20000 stays
+            # comfortably under the SDK's own ~21,333-token non-streaming
+            # ceiling (client.messages.create raises "Streaming is required
+            # for operations that may take longer than 10 minutes" above
+            # that, since self.client has no explicit timeout override) —
+            # so this needed no other change. Deliberately NOT going higher
+            # / switching to streaming: this repo's whole response-handling
+            # shape (response.content/stop_reason/usage read as one static
+            # object throughout core/chat.py) would need real rework to
+            # consume streamed deltas.
+            "max_tokens": 20000,
             "messages": messages,
             "betas": BETAS,
             # Prompt caching. Top-level cache_control auto-places the breakpoint on
