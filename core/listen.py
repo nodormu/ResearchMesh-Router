@@ -110,10 +110,86 @@ def handles(name: str) -> bool:
     return name in _TOOL_NAMES
 
 
+# `faster-whisper`'s `model.transcribe()` returns a LAZY generator for
+# segments (confirmed live via its own source: `generate_segments` itself
+# contains `yield`) — the real per-segment decoding work happens when the
+# caller iterates it, not when `transcribe()` is called. `model.transcribe()`
+# alone does real work too (feature extraction, language detection), but a
+# timeout that only wrapped that call and not the segment consumption right
+# after it would be protecting the wrong, shorter part of the work and leave
+# the actual long-running part completely unguarded — confirmed by timing
+# both parts separately on a realistic-length clip before writing this.
+#
+# faster-whisper has no CLI entry point (see module docstring), so unlike
+# the capture step above, there is no subprocess here to SIGKILL if this
+# hangs — same fundamental limitation core/midi1.py already documents for
+# its own in-process C-extension calls: `asyncio.wait_for` bounds the
+# CALLER'S wait, but cannot force the underlying thread to stop.
+#
+# Budget: measured ~2.6s total (model load + transcribe + join) for a full
+# 30s clip on this machine — call it ~12x real-time. `max(60, duration*4)`
+# is a generous multiple of that with real margin for a slower CPU or a
+# bigger configured model_size, while still bounding a genuinely
+# pathological hang to a bounded wait rather than an unbounded one.
+_TRANSCRIBE_TIMEOUT_MIN = 60
+_TRANSCRIBE_TIMEOUT_PER_SECOND = 4
+# Same role as core/midi1.py's _POLL_TIMEOUT_MARGIN: extra headroom so this
+# outer bound can't race the capture step's own inner timeout (duration+5)
+# and win by a hair, reporting a generic "hung" message for what was
+# actually just a well-behaved capture running right up to its own limit.
+_OUTER_TIMEOUT_MARGIN = 5
+
+
+def _resolve_duration(tool_input: dict, config: dict) -> int:
+    """Shared by execute() (to size the outer timeout) and _run() (to size
+    the actual capture) — kept as one function so the two can't drift."""
+    duration = tool_input.get("duration_seconds") or config.get(
+        "default_duration_seconds", 8
+    )
+    max_duration = config.get("max_duration_seconds", 30)
+    return max(1, min(int(duration), int(max_duration)))
+
+
 async def execute(name: str, tool_input: dict) -> str:
     if name != "listen":
         return json.dumps({"error": f"unknown listen tool {name!r}"})
-    return await asyncio.to_thread(_run, tool_input)
+
+    try:
+        config = _load_config()
+        duration = _resolve_duration(tool_input, config)
+    except Exception:
+        # Timeout SIZING must not itself be able to fail — _run() will hit
+        # and report the SAME config problem properly a moment later; this
+        # just needs a sane fallback so that failure doesn't also break the
+        # ability to time out at all. Matches _resolve_duration's own
+        # hardcoded defaults, so this is the same number config would have
+        # produced anyway on an empty/missing [listen] section.
+        duration = 8
+
+    capture_timeout = duration + 5
+    transcribe_timeout = max(
+        _TRANSCRIBE_TIMEOUT_MIN, duration * _TRANSCRIBE_TIMEOUT_PER_SECOND
+    )
+    overall_timeout = capture_timeout + transcribe_timeout + _OUTER_TIMEOUT_MARGIN
+
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_run, tool_input), timeout=overall_timeout
+        )
+    except TimeoutError:
+        return json.dumps(
+            {
+                "status": "error",
+                "reason": (
+                    f"listen timed out after {overall_timeout}s — most "
+                    "likely a hung transcription, since capture on its own "
+                    f"is already bounded to {capture_timeout}s (the "
+                    "underlying call could not be cancelled and may still "
+                    "be running in the background — same documented "
+                    "limitation as core/midi1.py's in-process calls)"
+                ),
+            }
+        )
 
 
 def _load_config() -> dict:
@@ -158,11 +234,7 @@ def _run(tool_input: dict) -> str:
         )
 
     # 3. Resolve + clamp duration.
-    duration = tool_input.get("duration_seconds") or config.get(
-        "default_duration_seconds", 8
-    )
-    max_duration = config.get("max_duration_seconds", 30)
-    duration = max(1, min(int(duration), int(max_duration)))
+    duration = _resolve_duration(tool_input, config)
 
     model_size = config.get("model_size", "base")
 

@@ -13,6 +13,7 @@ hint if the model reaches for it.
 import inspect
 
 from core import (
+    bash_session,
     browser,
     computer,
     config_edit,
@@ -36,6 +37,7 @@ MODULES = [
     browser,     # Playwright DOM surfing
     documents,   # LibreOffice / pandoc conversion
     kernel,      # stateful IPython
+    bash_session,  # persistent bash — cd/env/venv/bg jobs survive across calls
     processes,   # pexpect interactive commands
     config_edit,  # comment-preserving YAML/TOML/JSON edits
     data,        # DuckDB
@@ -80,6 +82,7 @@ async def shutdown():
     for label, close in (
         ("browser", browser.shutdown),
         ("kernel", kernel.shutdown),
+        ("bash_session", bash_session.shutdown),
         ("sql_query", data.close),
     ):
         try:

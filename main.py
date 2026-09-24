@@ -6,7 +6,7 @@ from contextlib import AsyncExitStack
 
 from anthropic import Anthropic
 
-from core import local_tools
+from core import local_tools, process_reaper
 from core.chat import Chat
 from core.claude import Claude, refresh_claude_models
 from core.cli import CliApp
@@ -242,6 +242,27 @@ async def _connect_mcp_servers(stack: AsyncExitStack, clients: dict) -> None:
         print(f"[mcp] {name}: connected")
 
 
+def _reap_orphans_on_exit() -> None:
+    """Last-line safety net, registered FIRST so AsyncExitStack's LIFO
+    unwind order runs it LAST — after local_tools.shutdown() and every
+    worker's own cleanup have already had their chance. Doesn't replace
+    any of that; checks the one thing none of those can see on their own
+    (see core/process_reaper.py) — the real OS child-process tree, not any
+    tool's own bookkeeping about what it thinks it already closed.
+    Wrapped defensively, same rule as every other exit-path step here:
+    cleanup must not be able to turn an ordinary exit into a traceback.
+    """
+    try:
+        reaped = process_reaper.reap_orphans()
+    except Exception as e:
+        print(f"[shutdown] orphan check failed (ignored): {e}", file=sys.stderr)
+        return
+    if reaped:
+        print(f"[shutdown] reaped {len(reaped)} leftover process(es): {', '.join(reaped)}")
+    else:
+        print("[shutdown] clean exit, no leftover processes")
+
+
 async def main():
     claude_service = Claude(model=claude_model)
 
@@ -249,6 +270,10 @@ async def main():
     clients = {}
 
     async with AsyncExitStack() as stack:
+        # Pushed first so it runs LAST (AsyncExitStack unwinds LIFO) --
+        # after every worker's cleanup below and local_tools.shutdown.
+        stack.callback(_reap_orphans_on_exit)
+
         if MCP_ENABLED and MCP_SERVERS:
             await _connect_mcp_servers(stack, clients)
             if not clients:

@@ -53,16 +53,17 @@ tells you where to be careful.
 | `core/cli.py` | copied; diverged when `/workers`/`/dagent` were added, and again when `/voice`/`/listen` were ported over from ResearchMesh |
 | `mcp_client.py` | copied, plus `timeout_seconds` |
 | `core/browser.py`, `computer.py`, `config_edit.py`, `data.py`, `documents.py`, `files.py`, `kernel.py`, `listen.py`, `memory.py`, `processes.py`, `speak.py`, `claude_learned_schemas.py`, `local_tools.py`, `output.py`, `text_embeddings.py`, `vision.py` | copied verbatim in the tool merge, unchanged |
+| `core/bash_session.py`, `process_reaper.py` | ported from ResearchMesh after the tool merge (bash_session added there first, process_reaper alongside it), copied verbatim, kept in the same byte-identical set as the row above |
 | `main.py`, `core/chat.py` | same skeleton; local-tool wiring restored, `SYSTEM_PROMPT` rewritten |
 | `core/claude.py` | same, including the beta endpoint (restored with `computer`) |
 | `core/tools.py` | rebuilt for this project; only the result-formatting helpers survive |
 | `smoke_test.py`, `e2e_test.py`, `e2e_worker.py`, `config.toml` | written here |
 
-The sixteen tool modules are byte-identical copies. Keep them that way — a fix in
+The eighteen tool modules are byte-identical copies. Keep them that way — a fix in
 either repo should be a straight `cp`. `diff -rq --exclude=__pycache__
 ../ResearchMesh/core core` currently reports five differing files (`chat.py`,
 `claude.py`, `cli.py`, `local_tools.py`, `tools.py`) plus one file only on the
-ResearchMesh side (`midi1.py` — this repo has no MIDI tool); all sixteen tool
+ResearchMesh side (`midi1.py` — this repo has no MIDI tool); all eighteen tool
 modules match byte for byte, and anything else appearing in that list is drift
 worth explaining. **`cli.py` is expected to differ, not a regression** — see its
 own Architecture bullet below for exactly what it carries beyond ResearchMesh's
@@ -81,7 +82,7 @@ inherited the already-fixed versions — but it identifies where an mcp 3.0 woul
 land, and it would land in ResearchMesh too.
 
 If that happens, the two are still trivially comparable despite the separate
-histories: the sixteen tool modules (see the table above) stay byte-identical
+histories: the eighteen tool modules (see the table above) stay byte-identical
 copies by convention, and `mcp_client.py` diverges by about nine lines of real
 code (the `timeout_seconds` parameter and its two uses). `diff -u
 ../ResearchMesh/mcp_client.py mcp_client.py` shows the whole of it. `core/cli.py`
@@ -551,6 +552,37 @@ worker MCP tools**.
   bookkeeping rather than primary work). This is scoped strictly to the
   router's own local `bash` — it says nothing about any worker's shell,
   which is a separate, per-worker fact.
+- **`core/bash_session.py`** — `bash_session`: persistent shell (`cd`/env/venvs/bg
+  jobs survive across calls), copied verbatim from ResearchMesh, ported after the
+  initial tool merge. Same idea as `core/kernel.py` but over `pexpect` instead of
+  ZeroMQ, and reuses this repo's own `[bash].shell`/`apply_shell_prelude()` above
+  so it can't drift from the stateless `bash` tool's shell choice or zsh handling.
+  Module-level singleton shell; each command plus a `PROMPT_COMMAND='PS1=""'`
+  reset plus a `printf` sentinel+`$?` are sent as ONE brace group, not separate
+  lines — bash only consults `PROMPT_COMMAND` between top-level reads, never
+  mid-compound-construct, so the reset always wins even against a command that
+  reassigns `PROMPT_COMMAND` itself (conda/direnv), not just plain `venv`.
+  Timeout sends Ctrl-C, gated by a real `tcgetpgrp` check rather than a
+  sentinel-match alone (a still-alive raw-mode program like `less`/`vim`/`top`
+  can echo the sentinel back itself) — if bash doesn't own the terminal after
+  that, escalates to a full respawn (`restart:true`'s own path) instead of
+  retrying on the same pty, reporting `state_reset: true`. In the
+  `shutdown()` tuple. Not separately named in `SYSTEM_PROMPT` — that prompt's
+  own local-tool examples (`bash`, `python`, `computer`, ...) are deliberately
+  illustrative, not an exhaustive/numbered list the way ResearchMesh's own
+  `SYSTEM_PROMPT` is, so there is no closed enumeration for this to be
+  missing from.
+- **`core/process_reaper.py`** — `reap_orphans()`: copied verbatim from
+  ResearchMesh, ported alongside `bash_session.py`. Last-line exit safety net,
+  independent of what any tool's own `shutdown()`/`cleanup()` claims to have
+  handled — walks `/proc/<pid>/task/<TID>/children` for **every thread**, not
+  just the main one (every blocking local tool here uses
+  `asyncio.to_thread()`, so a forked child shows up under a worker thread's
+  task entry, not the main thread's), SIGKILLs whatever's still alive, then
+  reaps zombie direct children via a bounded `waitpid(-1, WNOHANG)` retry loop.
+  Registered in `main.py` on the `AsyncExitStack`, pushed FIRST so it runs
+  LAST — after every worker's own `cleanup()` and `local_tools.shutdown()`.
+  Reports what it actually found and killed; empty is the expected common case.
 - **TLS to a worker needs nothing here.** An `https://` url just works:
   `create_mcp_http_client` exposes no `verify` parameter to plumb, and none is
   needed, because httpx2 defaults to `truststore.SSLContext` — the OS trust

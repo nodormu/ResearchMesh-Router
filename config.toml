@@ -16,7 +16,7 @@
 # worker's — it does not edit this file. Hand-editing this array still works
 # (e.g. to pin a specific dated snapshot) — it just gets overwritten on the
 # next scan once claude_models_checked_at goes stale.
-claude_models = ["claude-sonnet-5", "claude-fable-5-1", "claude-opus-5", "claude-haiku-4-5-20251001"]
+claude_models = ["claude-sonnet-5", "claude-opus-5-5", "claude-fable-5-1", "claude-haiku-4-5-20251001"]
 
 # Set automatically by refresh_claude_models() whenever claude_models above
 # is refreshed from a live scan. Do not hand-edit except to force an
@@ -29,7 +29,7 @@ claude_models = ["claude-sonnet-5", "claude-fable-5-1", "claude-opus-5", "claude
 # smaller number just adds network calls to every other process start for
 # no practical benefit.
 model_scan_ttl_hours = 24
-claude_models_checked_at = "2026-09-17T20:29:41.757876+00:00"
+claude_models_checked_at = "2026-09-24T21:21:22.235135+00:00"
 
 [bash]
 # Shell the `bash` tool runs commands through (subprocess.run's `executable=`
