@@ -53,3 +53,15 @@ pillow>=10.0             # `computer` — screenshot encode/resize; also pyautog
 httpx>=0.24              # `text_embeddings` — calls your own embedding server
                          # (core/text_embeddings.py); already guaranteed by
                          # `anthropic` above, listed here for a direct import.
+piper-tts                # `speak` — local neural TTS (core/speak.py), invoked
+                         # as `python3 -m piper` (its CLI entry point). **Not**
+                         # `sudo apt install piper` — that installs an unrelated
+                         # GTK app for configuring gaming mice, same name by
+                         # coincidence (see CLAUDE.md). Playback itself needs no
+                         # pip package: it shells out to PipeWire's `paplay`.
+faster-whisper           # `listen` — CPU/CTranslate2 speech-to-text
+                         # (core/listen.py), called in-process
+                         # (`WhisperModel(...).transcribe(...)`), no CLI entry
+                         # point of its own. Capture itself goes through the
+                         # system `parecord` binary (not pip); this package only
+                         # does the transcription step.

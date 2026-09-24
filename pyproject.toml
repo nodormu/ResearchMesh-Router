@@ -39,6 +39,8 @@ tools = [
     "pillow>=10.0",
     "httpx>=0.24",            # text_embeddings — already guaranteed by anthropic,
                               # listed here for the direct import in core/text_embeddings.py
+    "piper-tts",              # speak — see requirements.txt for the full note
+    "faster-whisper",         # listen — see requirements.txt for the full note
 ]
 
 # `ruff check .` should come back clean — that is the bar for an edit here, the
