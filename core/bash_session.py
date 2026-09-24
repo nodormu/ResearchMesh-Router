@@ -17,12 +17,20 @@ changes the prompt (a venv/conda/direnv activation) can't leak prompt text
 into the output — see the reset in `_run()` for the mechanism.
 
 Reuses `SHELL_EXECUTABLE`/`apply_shell_prelude` from
-core/claude_learned_schemas.py, so `[bash].shell = "zsh"` reaches this
-module too, not just the stateless `bash` tool — but zsh needs two real,
-zsh-specific fixes beyond that shared prelude, both found live against a
-real zsh 5.9 and both invisible on bash's own pty session (which never
-echoes input back at all, unlike zsh): `_ZSH_SESSION_PRELUDE` disables
-zsh's line editor (which otherwise redraws every line with backspace
+core/claude_learned_schemas.py, so `[bash].shell = "zsh"` or `"dash"`
+reaches this module too, not just the stateless `bash` tool. Three shells
+are genuinely supported: bash (the default), zsh, and dash (Ubuntu/
+Debian's real `/bin/sh`, so it matters even though bash is the default
+interactive shell). Other shells (fish, tcsh, ksh) were tried live and
+found to either hang outright or need fundamentally different
+grouping/assignment syntax this module doesn't speak — not a quick fix,
+deliberately not attempted here.
+
+zsh needs two real, zsh-specific fixes beyond the shared prelude, both
+found live against a real zsh 5.9 and both invisible on bash's own pty
+session (which never echoes input back at all, unlike zsh):
+`_ZSH_SESSION_PRELUDE` disables zsh's line editor (which otherwise
+redraws every line with backspace
 sequences this module's ANSI stripping can't handle) and two cosmetic
 prompt options, sent as its own round-trip before anything else *because*
 folding it into the same multi-line send as the rest of `_spawn()`'s
@@ -79,18 +87,40 @@ from core.output import clip
 # mechanism on zsh, not just an extra prelude line.
 _IS_ZSH = Path(SHELL_EXECUTABLE).name == "zsh"
 
-# bash/ksh's PROMPT_COMMAND has no zsh equivalent by that name — confirmed
-# live (real zsh 5.9, not assumed): `zsh -c 'echo ${(t)PROMPT_COMMAND}'`
-# reports it as completely unset/untyped, so the bash form of this reset is
-# silently inert there, and a real PS1 leak was reproduced live as a direct
-# result. zsh calls a `precmd` function instead, with the same load-bearing
-# timing PROMPT_COMMAND has in bash — only before a NEW top-level prompt,
-# never mid-compound-construct — so redefining it at the end of the same
-# brace group a caller's command runs in wins even against a command that
-# stomps PS1 *and* redefines precmd itself, exactly mirroring the bash
-# conda/direnv-stomp case this same trick already handles there. Verified
-# live: that exact worst case leaked zero characters into the next call.
-_PS1_RESET = "precmd() { PS1=''; }" if _IS_ZSH else "PROMPT_COMMAND='PS1=\"\"'"
+# dash: Ubuntu/Debian's real /bin/sh, so it matters even though bash is the
+# default interactive shell — anything that shells out via /bin/sh runs
+# under it. Confirmed live it reaches this module the same way zsh does
+# ([bash].shell = "dash"), and was silently broken the same way zsh
+# originally was, for a different underlying reason (see _PS1_RESET below).
+_IS_DASH = Path(SHELL_EXECUTABLE).name == "dash"
+
+# bash's PROMPT_COMMAND has no equivalent by that name on either zsh or
+# dash, confirmed live on both, for two DIFFERENT reasons:
+#   zsh: calls a `precmd` function instead (see below), which still has
+#     the same load-bearing "only before a NEW top-level prompt" timing
+#     PROMPT_COMMAND relies on — so it needs the same kind of hook-based
+#     reset bash uses, just spelled differently.
+#   dash: has NO dynamic prompt-hook mechanism AT ALL — no
+#     PROMPT_COMMAND, no precmd, nothing. Its interactive prompt-printing
+#     just reads $PS1's current value fresh, with nothing invoked in
+#     between. That actually makes its fix simpler than either bash or
+#     zsh, not harder: bash/zsh need a HOOK specifically because a user
+#     command (conda/venv activate) can re-arm that hook to fire again
+#     later, after our own reset has already run, right before the next
+#     visible prompt. Dash has no re-invocation mechanism a command could
+#     exploit that way — whichever assignment to PS1 happens LAST simply
+#     wins. So a plain, unconditional `PS1=''` as the final statement
+#     inside the same brace group is fully sufficient on dash — nothing
+#     can run after it but before dash prints its next prompt. Verified
+#     live: a command that sets PS1 directly (dash's actual worst case,
+#     since there's no hook to also redefine) still leaks zero characters
+#     into the next call.
+if _IS_ZSH:
+    _PS1_RESET = "precmd() { PS1=''; }"
+elif _IS_DASH:
+    _PS1_RESET = "PS1=''"
+else:
+    _PS1_RESET = "PROMPT_COMMAND='PS1=\"\"'"
 
 # zsh-only spawn-time priming, prepended ahead of everything else so it's
 # already in effect before any real command runs. No-op string on bash.

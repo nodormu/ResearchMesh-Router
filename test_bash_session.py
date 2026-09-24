@@ -410,6 +410,113 @@ async def check_zsh_support(bs) -> None:
         bs.SHELL_EXECUTABLE, bs._IS_ZSH, bs._PS1_RESET, bs._ZSH_SESSION_PRELUDE = orig
 
 
+async def check_dash_support(bs) -> None:
+    """`[bash].shell` can be pointed at dash too -- Ubuntu/Debian's real
+    `/bin/sh`, so it matters even though bash is the default interactive
+    shell. It used to leak a garbled PS1 into every single command's
+    output: dash has NO `PROMPT_COMMAND`, no `precmd`-equivalent, no
+    dynamic prompt-hook mechanism at all, so the bash-shaped reset was
+    silently inert there (same underlying gap zsh had, different shell).
+
+    Fix is simpler than zsh's needed to be: dash's prompt-printing just
+    reads $PS1's CURRENT value fresh, with nothing invoked in between --
+    no hook a user command could re-arm to fire again later, after our
+    own reset already ran. So a plain, unconditional `PS1=''` as the
+    final statement inside the same brace group is fully sufficient;
+    nothing can run after it but before dash prints its next prompt.
+
+    Skips cleanly (not a failure) if dash isn't installed -- this is
+    coverage for an optional, opt-in shell choice, not a hard dependency
+    (even though dash ships by default on Ubuntu/Debian).
+    """
+    print("dash support ([bash].shell = dash) -- PS1-leak fix")
+
+    dash_path = shutil.which("dash") or (
+        "/bin/dash" if os.path.isfile("/bin/dash") else None
+    )
+    if not dash_path:
+        print("  skip  dash not installed on this machine -- nothing to test")
+        return
+
+    # Simulate what a fresh import would compute with [bash].shell=dash --
+    # _IS_DASH/_PS1_RESET are derived once at import time in the real
+    # module, so a live monkeypatch has to override both together, not
+    # just SHELL_EXECUTABLE itself. _ZSH_SESSION_PRELUDE stays "" (dash
+    # has no ZLE-style redraw problem, confirmed live separately).
+    orig = (bs.SHELL_EXECUTABLE, bs._IS_ZSH, bs._IS_DASH, bs._PS1_RESET)
+    await bs.shutdown()  # drop the existing bash-backed shell first
+    bs.SHELL_EXECUTABLE = dash_path
+    bs._IS_ZSH = False
+    bs._IS_DASH = True
+    bs._PS1_RESET = "PS1=''"
+
+    try:
+        r = await run(bs, "export DASH_MARK=dash_state_ok; echo hello_from_dash")
+        check(
+            "basic command runs cleanly under dash (no leaked PS1 template)",
+            "hello_from_dash" in r.get("output", "") and "\\[\\e]0;" not in r.get("output", ""),
+            str(r),
+        )
+
+        # Dash's actual worst case: there's no hook to also redefine, so
+        # a direct PS1 assignment by the user's own command IS the worst
+        # case (unlike bash/zsh, which also need to survive a re-armed
+        # hook function).
+        await run(bs, "PS1='LEAK_MARKER_$$ '; echo stomped")
+        r = await run(bs, "echo dash_leak_check")
+        check(
+            "PS1 stomp does not leak into the next call",
+            "LEAK_MARKER" not in r.get("output", ""),
+            str(r),
+        )
+
+        # Plain Ctrl-C recovery -- same class of scenario that exposed
+        # zsh's :130 bug; confirms no analogous corruption on dash.
+        r = await run(bs, "sleep 30", timeout=2)
+        check("dash: reports timed_out", r.get("timed_out") is True, str(r))
+        check(
+            "dash: plain recovery, not escalated",
+            r.get("recovered") is True and r.get("force_killed") is False,
+            str(r),
+        )
+        r2 = await run(bs, "echo DASH_MARK=$DASH_MARK")
+        check(
+            "dash: state survived plain recovery (proves no stale-byte bleed)",
+            "DASH_MARK=dash_state_ok" in r2.get("output", ""),
+            str(r2),
+        )
+        check(
+            "dash: exit code fidelity intact after recovery",
+            r2.get("return_code") == 0,
+            str(r2),
+        )
+
+        # Escalated recovery: a SIGINT-ignoring process, raw-mode-like.
+        r = await run(
+            bs,
+            "python3 -c \"import signal,time; "
+            "signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(9999)\"",
+            timeout=4,
+        )
+        check("dash: escalation reports recovered", r.get("recovered") is True, str(r))
+        check("dash: escalation reports force_killed", r.get("force_killed") is True, str(r))
+        r2 = await run(bs, "echo dash_post_escalation_ok; false; echo rc=$?")
+        check(
+            "dash: genuinely responsive after escalation, not just self-reported",
+            "dash_post_escalation_ok" in r2.get("output", ""),
+            str(r2),
+        )
+        check(
+            "dash: exit code fidelity intact after escalated recovery",
+            "rc=1" in r2.get("output", "") and r2.get("return_code") == 0,
+            str(r2),
+        )
+    finally:
+        # Leave the module exactly as later/earlier steps expect it.
+        await bs.shutdown()
+        bs.SHELL_EXECUTABLE, bs._IS_ZSH, bs._IS_DASH, bs._PS1_RESET = orig
+
+
 async def _run_all() -> int:
     sys.path.insert(0, str(ROOT))
     from core import bash_session as bs
@@ -428,6 +535,7 @@ async def _run_all() -> int:
             check_raw_mode_program_recovery,
             check_restart,
             check_zsh_support,
+            check_dash_support,
         ):
             await step(bs)
             print()
