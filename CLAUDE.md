@@ -556,7 +556,11 @@ worker MCP tools**.
   jobs survive across calls), copied verbatim from ResearchMesh, ported after the
   initial tool merge. Same idea as `core/kernel.py` but over `pexpect` instead of
   ZeroMQ, and reuses this repo's own `[bash].shell`/`apply_shell_prelude()` above
-  so it can't drift from the stateless `bash` tool's shell choice or zsh handling.
+  so it can't drift from the stateless `bash` tool's shell choice or zsh handling
+  — including two zsh-specific fixes ported alongside this file (a real spawn-time
+  hang and a recovery-path corruption bug, both found live against a real zsh;
+  see the module's own docstring, `_PS1_RESET` swaps in a `precmd()`-based
+  mechanism there since zsh has no `PROMPT_COMMAND` at all).
   Module-level singleton shell; each command plus a `PROMPT_COMMAND='PS1=""'`
   reset plus a `printf` sentinel+`$?` are sent as ONE brace group, not separate
   lines — bash only consults `PROMPT_COMMAND` between top-level reads, never
