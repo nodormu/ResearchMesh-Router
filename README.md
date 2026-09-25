@@ -476,6 +476,13 @@ this project's; the `expect` regex just has to match what git really prints.
 
 The model only ever sees the word `"github"` — never your real PAT, at any point.
 
+```
+BELOW IS HOW YOU BLOW THE WHOLE VAULT AWAY IF YOU WANT START OVER
+═════════════════════════════════════════════════════════════════
+gpgconf --kill gpg-agent
+rm -rf ~/.password-store
+```
+
 ## Configuration
 
 Non-secret settings live in `config.toml`. Secrets stay in the environment — the app
