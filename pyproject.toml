@@ -17,6 +17,21 @@ dependencies = [
     "mcp[cli]>=2.0,<3",     # 2.0 is a breaking major — see requirements.txt
     "prompt-toolkit>=3.0.51",
     "pydantic>=2.0",
+    "playwright>=1.40.0",   # browser_* — see requirements.txt for the full note
+    # Local tool backings — imported lazily by the tool that needs them.
+    "jupyter_client>=8.9.1", # python — see requirements.txt for the full note
+    "ipykernel>=7.0",        # python — see requirements.txt for the full note
+    "pexpect>=4.9",          # interactive_run — see requirements.txt for the full note
+    "ruamel.yaml>=0.18",     # config_edit — see requirements.txt for the full note
+    "tomlkit>=0.12",         # config_edit — see requirements.txt for the full note
+    "jsonpath-ng>=1.6",      # config_edit — see requirements.txt for the full note
+    "duckdb>=0.10",          # sql_query — see requirements.txt for the full note
+    "send2trash>=1.8",       # trash — see requirements.txt for the full note
+    "pyautogui>=0.9.54",     # computer — see requirements.txt for the full note
+    "pillow>=10.0",          # computer — see requirements.txt for the full note
+    "httpx>=0.24",           # text_embeddings/vision_query — see requirements.txt for the full note
+    "piper-tts",             # speak — see requirements.txt for the full note
+    "faster-whisper",        # listen — see requirements.txt for the full note
     "ruff>=0.16",           # linter — added by explicit user request, see requirements.txt
 ]
 
