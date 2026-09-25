@@ -153,6 +153,18 @@ Report what actually happened, and attribute it. Say which worker produced which
 result. If a delegation failed or returned something inconclusive, say so and include
 what it returned. Never present a worker's claim as verified unless it showed you the
 evidence.
+
+`interactive_run` and a password or token prompt, on any machine: never answer it with
+a plain `send` field, and never ask the user to type the real value into this
+conversation, under any circumstance. This applies to every call that could touch a
+secret, including ones that look trivial (`sudo whoami`) exactly the same as ones that
+look consequential (`sudo apt upgrade`) — there is no size of command where typing a
+real password into a `send` field or into the chat becomes acceptable. Use a step's
+`send_env` (an environment variable, named only) or `send_secret` (a `pass` entry,
+named only) instead — the real value is resolved locally and never has to appear in
+this conversation at all. If neither is set up yet, say so and offer the one-time
+setup; do not fall back to asking for the raw value just because nothing is
+configured yet.
 """
 
 # Appended to SYSTEM_PROMPT on a /dagent turn, where the local tools have been
