@@ -23,10 +23,19 @@ dependencies = [
 # [project.optional-dependencies].tools below, NOT here -- they were briefly
 # duplicated into this array by mistake (a "reconcile pyproject.toml against
 # requirements.txt" pass that only checked this array and missed the extras
-# group entirely, wrongly concluding they were absent). requirements.txt
-# itself installs everything flat with no optional/required split, which is
-# fine for its own purpose; this file's OWN pre-existing design deliberately
-# keeps them optional here instead, installable via `pip install .[tools]`.
+# group entirely, wrongly concluding they were absent).
+#
+# Two different INSTALL SURFACES, not "optional vs required" packages --
+# every one of these is fully required by its own tool; none of them is
+# dispensable. `pip install -r requirements.txt` brings in everything flat,
+# in one command. This file's own minimal `dependencies` array plus the
+# `pip install .[tools]` extra is a NARROWER surface (this repo's own core
+# four packages only, vs. core + every tool backing) that CI/mypy use on
+# purpose, to catch a dependency changing shape underneath the code without
+# pulling in a browser download / apt packages / a display requirement for
+# no extra signal. Neither surface makes any package here skippable -- they
+# name which install command brings a package in, not whether the tool that
+# needs it still works without it.
 
 # `pip install -e ".[tools]"` — the same set requirements.txt installs, which is
 # what the README's quick start tells you to use. `computer` and
