@@ -405,7 +405,12 @@ Step 5: pass show <entry-name>
               the first time; gpg-agent caches it for a while after)
 ```
 
-**EXPLANATION FOR SETTING UP A VAULT FROM SCRATCH AND ADDING YOUR GITHUB PASSWORD TO IT AS AN EXAMPLE**
+**EXPLANATION FOR SETTING UP A VAULT FROM SCRATCH AND ADDING YOUR GITHUB PERSONAL ACCESS TOKEN (PAT) TO IT AS AN EXAMPLE**
+
+Using a PAT specifically, not a password, because GitHub doesn't accept account
+passwords for git/API operations at all anymore — a PAT is what actually goes in that
+prompt. Generate one at github.com → Settings → Developer settings → Personal access
+tokens.
 ```
 Thing            Where it comes from              What it's actually for
 ─────────────────────────────────────────────────────────────────────────
@@ -444,24 +449,32 @@ Private key      Generated automatically           Unlocks passwords so you
 
 ─────────────────────────────────────────────────────────────────────────
 Your Actual      You type it when you run          THIS is your actual
-GitHub           `pass insert github` — pass       GitHub password/token —
-Password         then asks you for it on its       the real thing you log
-                 OWN separate line, AFTER you       into GitHub with.
-                 run that command                  Lives INSIDE the vault,
+GitHub           `pass insert github` — pass       GitHub PAT — the real
+Personal         then asks you for it on its       credential git sends to
+Access Token     OWN separate line, AFTER you      GitHub over HTTPS. Lives
+(PAT)            run that command                  INSIDE the vault,
                                                     encrypted. Retrieved
                                                     with `pass show github`.
                                                     GitHub sees THIS, never
                                                     the passphrase. NOT the
                                                     same as, and unrelated
                                                     to, the passphrase
-                                                    above.
+                                                    above. NOT your GitHub
+                                                    account password either
+                                                    — GitHub no longer
+                                                    accepts that for git/API
+                                                    use at all.
 ```
 
 Once set up, a tool call looks like:
 ```json
 {"expect": "Password for", "send_secret": "github"}
 ```
-The model only ever sees the word `"github"` — never your real password, at any point.
+Note: git's own prompt text literally says "Password for ..." even though what
+actually belongs there is your PAT, not a password — that's git's wording, not
+this project's; the `expect` regex just has to match what git really prints.
+
+The model only ever sees the word `"github"` — never your real PAT, at any point.
 
 ## Configuration
 
