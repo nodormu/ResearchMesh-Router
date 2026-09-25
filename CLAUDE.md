@@ -590,6 +590,82 @@ worker MCP tools**.
   illustrative, not an exhaustive/numbered list the way ResearchMesh's own
   `SYSTEM_PROMPT` is, so there is no closed enumeration for this to be
   missing from.
+- **`core/processes.py`** — `interactive_run`: answers a spawned command's
+  prompts (passwords, `[y/N]`, ssh host keys) from a `steps` script the model
+  supplies. A step's reply comes from `send` (literal, model writes it
+  directly), `send_env` (an environment variable NAME only), or `send_secret`
+  (a `pass` entry NAME only) — the latter two exist because a literal `send`
+  for a real secret means the value has to round-trip through Anthropic's API
+  twice (told to the model, then written into its own tool call) before
+  `secret: true` ever gets a chance to redact anything, which only ever
+  covered what came back afterward, not either of those two trips. `send_file`
+  (a file path) was built, then deliberately removed the same day: it
+  requires writing the secret to a plaintext file as a matter of normal use,
+  a strictly worse default than `send_env`, which needs no new persistent
+  artifact when used as intended (a fresh `export` in an interactive shell).
+  `secret-tool`/libsecret (the freedesktop Secret Service D-Bus API) was
+  evaluated and rejected for `send_secret` specifically: it requires a
+  keyring daemon tied to a logged-in graphical session (confirmed live, this
+  machine runs GNOME Keyring and KDE's `ksecretd` simultaneously) — a
+  headless server has neither running at all, not a "which desktop
+  environment" gap but a "no desktop environment" gap. `pass` (GPG-backed,
+  `pinentry-curses` for the passphrase) has no such requirement and is
+  available directly or via EPEL on every mainstream distro checked
+  (Ubuntu/Debian/Fedora/Arch directly; RHEL/CentOS/Oracle Linux 8+ via EPEL;
+  the one gap is `pass` having been dropped from EPEL7 in 2019, never
+  restored for that generation).
+
+  Both `send_env`/`send_secret` are unconditionally treated as secret in the
+  transcript regardless of the step's own `secret` field. Redaction is a
+  single pass over the COMPLETE final transcript (`_redact()`), not a
+  per-call-site `"***"` substitution — the original design only replaced the
+  reply at the exact line it was sent on, which correctly hid it there but
+  missed a real live case: a child process that echoes the received value
+  back on its own, later, as unrelated output. A test script doing exactly
+  that leaked a real credential into a live conversation before this was
+  caught and fixed; `test_processes.py`'s
+  `check_secret_redacted_even_when_echoed_back_later` reproduces that exact
+  scenario as a permanent regression check.
+
+  `send_secret`'s entry-name resolution is deliberately NOT "trust whatever
+  name the model gives it," for a second, separate reason found live: a real
+  session skipped straight to `send_secret: "sudo_admin"` on its first-ever
+  attempt — correctly guessing the only entry that existed — with no
+  confirmation step at all, because nothing forced one. `_resolve_reply()`
+  now refuses ANY entry name (a real one, `"?"`, anything) the first time
+  it's referenced in the running process — tracked in the module-level
+  `_confirmed_secret_entries` set — and returns a fixed, code-generated
+  prompt (`_select_entry_prompt()`) built from the vault's real contents:
+  `"please select the cred name I need to use:"` plus every real entry. Only
+  a second reference to that same name proceeds. This is enforced in code
+  specifically because the equivalent instruction in `SYSTEM_PROMPT` alone
+  was tried first and was not reliably followed across otherwise-identical
+  live sessions — one call correctly refused a bare password ask, the very
+  next call (same code, same schema) skipped straight to using the sole
+  vault entry with no prompt at all. Known limitation, not papered over:
+  this is process-lifetime state, not a verified human response — nothing
+  stops multiple tool calls within one model turn from "confirming" an entry
+  against each other before any text reaches the user.
+
+  `_select_entry_prompt()` reads `$PASSWORD_STORE_DIR` (falling back to
+  `pass`'s own documented `~/.password-store` default) and walks `*.gpg`
+  files directly rather than parsing `pass ls`'s own tree-drawing display
+  output — the first version did the latter and silently lost folder
+  structure for a nested entry (`aws/prod` rendered under an `aws` branch
+  came back as bare `prod`, not a valid `pass show` argument). A wrong or
+  hallucinated entry name gets the same real-contents treatment on its OWN
+  failure path too (`_available_entries_hint()`, appended to a `pass show`
+  error), so a guess that happens to be wrong still surfaces what's actually
+  there instead of failing blind.
+
+  `_SEND_SECRET_TIMEOUT` (30s, was 10s) bounds the `pass show` subprocess
+  specifically because an unlocked-vs-cached GPG key can trigger a REAL
+  `pinentry` GUI popup on the user's own screen, entirely independent of
+  this call — confirmed live that answering one (reading it, recalling a
+  passphrase, typing it) routinely exceeds 10s of real human time; 30s
+  still fails clearly rather than hanging the full `interactive_run`
+  timeout if nothing is ever going to answer at all.
+
 - **`core/process_reaper.py`** — `reap_orphans()`: copied verbatim from
   ResearchMesh, ported alongside `bash_session.py`. Last-line exit safety net,
   independent of what any tool's own `shutdown()`/`cleanup()` claims to have
