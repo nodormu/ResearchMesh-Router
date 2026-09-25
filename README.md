@@ -352,6 +352,104 @@ All of the above run entirely on this machine — none of it needs a worker conf
 Once you've added one (see [Adding workers](#adding-workers) below), `/workers` and
 `/dagent` are the natural next things to try.
 
+### 8) interactive_run — secrets must never be typed directly
+
+`interactive_run` answers prompts (passwords, `[y/N]`, ssh host keys) from a script the
+model writes. For a password or token specifically, **never use its plain `send` field**
+— that means typing the real value into the model's own request, which sends it to
+Anthropic twice (once when you tell the model, once when the model writes it into the
+call) before it's ever redacted from what comes back.
+
+Use one of these instead — the model only ever sees a *name*, never the real value:
+
+- **`send_env`** — name of an environment variable you set yourself, in your own shell.
+  No setup beyond `export SOMETHING=...`. Not fully immune to ending up in plain text
+  (shell history, a startup file) — just doesn't *require* it the way a file would.
+- **`send_secret`** — name of a [`pass`](https://www.passwordstore.org/) entry. Real,
+  GPG-encrypted-at-rest storage. Needs a one-time setup (below), but is the one option
+  that's actually encrypted, not just "plain text if you're careless." Works identically
+  on a desktop or a headless server — no GUI, no D-Bus, no desktop environment required.
+
+If you plan to use `interactive_run` for anything password-shaped at all, set up
+`send_secret` once and use it — it's not much more work than `send_env` and it's the
+only one of the two that's genuinely secure at rest.
+
+**One-time `pass` setup:**
+```
+sudo apt install pass pinentry-curses
+gpg --full-generate-key
+gpg --list-secret-keys
+pass init <the-key-id-it-shows-you>
+pass insert github
+```
+
+**SETTING UP A VAULT FROM SCRATCH AND ADDING YOUR GITHUB PASSWORD TO IT AS AN EXAMPLE**
+```
+Thing            Where it comes from              What it's actually for
+─────────────────────────────────────────────────────────────────────────
+Name / Email     You type it when you run         The vault never reads this
+(= "User ID")    `gpg --full-generate-key`         — but YOU will. It's the
+                 to create your key                only human-readable label
+                                                    you'll see when running
+                                                    `gpg --list-keys` later.
+                                                    Pick something you'll
+                                                    recognize (e.g. name:
+                                                    "pass-vault"), not
+                                                    garbage — you're the one
+                                                    who has to remember it,
+                                                    not the software.
+
+Passphrase       You type it when you run         Unlocks your PRIVATE KEY
+                 `gpg --full-generate-key`,        so the vault is ALLOWED
+                 same command as above             to open. That's ALL it
+                                                    does. It is NOT your
+                                                    GitHub password, your
+                                                    sudo password, or any
+                                                    website's password —
+                                                    GitHub/any website NEVER
+                                                    sees this, ever. ONE
+                                                    passphrase total, same
+                                                    one no matter what
+                                                    you're accessing.
+
+Key ID           GPG generates this on its        An ID number you give to
+(long hex        own, shown to you after           `pass init` one time, to
+string)          you run `gpg --list-secret-       tell your (still-empty)
+                 keys`                             vault which key to use.
+
+Public key       Generated automatically           Locks up new passwords
+                 alongside the key, same           you save — used the
+                 command as above                  moment you run
+                                                    `pass insert github`.
+
+Private key      Generated automatically           Unlocks passwords so you
+                 alongside the key, same           can read them — used the
+                 command as above                  moment you run
+                                                    `pass show github` (once
+                                                    the passphrase has
+                                                    unlocked the key itself).
+
+─────────────────────────────────────────────────────────────────────────
+Your Actual      You type it when you run          THIS is your actual
+GitHub           `pass insert github` — pass       GitHub password/token —
+Password         then asks you for it on its       the real thing you log
+                 OWN separate line, AFTER you       into GitHub with.
+                 run that command                  Lives INSIDE the vault,
+                                                    encrypted. Retrieved
+                                                    with `pass show github`.
+                                                    GitHub sees THIS, never
+                                                    the passphrase. NOT the
+                                                    same as, and unrelated
+                                                    to, the passphrase
+                                                    above.
+```
+
+Once set up, a tool call looks like:
+```json
+{"expect": "Password for", "send_secret": "github"}
+```
+The model only ever sees the word `"github"` — never your real password, at any point.
+
 ## Configuration
 
 Non-secret settings live in `config.toml`. Secrets stay in the environment — the app
