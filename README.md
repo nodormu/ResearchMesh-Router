@@ -140,7 +140,7 @@ client, so a Claude subscription won't work.
 
 ```bash
 sudo apt install python3 python3-venv python3-dev build-essential \
-                 libreoffice pandoc python3-tk scrot
+                 libreoffice pandoc python3-tk scrot pulseaudio-utils
 
 python3 -m venv ~/researchmesh-router
 source ~/researchmesh-router/bin/activate
@@ -148,7 +148,12 @@ pip install -r requirements.txt
 ```
 
 `libreoffice` + `pandoc` back `document_convert`; `python3-tk` and `scrot` back
-`computer` — see step 3. Router needs the same backings as
+`computer` — see step 3. `pulseaudio-utils` backs `speak`/`listen` (`paplay`/
+`parecord`) — both call it directly with no fallback, so unlike most per-tool
+packages it isn't a clean "tool declares itself unavailable" story if it's missing,
+just a raw subprocess failure; it's usually already present on a real desktop
+(pulled in by PipeWire), but not on a headless server or WSL, so it's listed
+explicitly rather than assumed. Router needs the same backings as
 [ResearchMesh](https://github.com/nodormu/ResearchMesh) itself, since it executes the
 same local tools in addition to delegating — every per-tool package is installed
 unconditionally via `requirements.txt`, none of them are meant to be skipped, and each
