@@ -451,6 +451,72 @@ def check_local_tools() -> None:
     )
 
 
+def check_docs_match_code() -> None:
+    """The other three ResearchMesh forks (Linux, Mac, Windows) all share a
+    near-identical version of this check: a regex hunts README.md/CLAUDE.md
+    for a stated tool COUNT ("N local tools", etc.) and asserts it equals
+    `len(local_tools.TOOLS)`. That exact check does NOT fit this fork,
+    confirmed by reading both docs rather than assumed — porting it
+    verbatim would either silently pass on a coincidence or permanently
+    fail on a doc that was never wrong in the first place:
+
+      - README.md DOES state a plain count ("**23 local tools**", "the 23
+        local tools alone") consistently, so that half of the borrowed
+        check is reused unchanged below.
+      - CLAUDE.md deliberately NEVER states a raw tool-count number
+        anywhere. It documents the local half of the tool list via a
+        "Where it came from" file-provenance table instead — which
+        modules were copied verbatim from ResearchMesh vs. diverged — a
+        real, intentional style choice suited to this fork's specific
+        job (tracking inheritance), not an oversight. A borrowed numeric
+        check would have nothing to find here and either false-fail
+        ("no tool-count phrasing found") forever or need to be silently
+        skipped, neither of which actually checks anything.
+
+    So CLAUDE.md gets a DIFFERENT check instead, one that matches what it
+    actually promises: every local-tool-backing module file that
+    `core/local_tools.py` really imports should be mentioned SOMEWHERE in
+    CLAUDE.md (its provenance table or otherwise) — so a new tool module
+    added to MODULES without a single word added to CLAUDE.md fails
+    loudly, which is the same "silent doc drift" this whole check family
+    exists to catch, just aimed at the promise THIS file's docs actually
+    make rather than a borrowed one they don't.
+    """
+    print("docs vs code")
+    import inspect
+    import os
+
+    from core import local_tools
+
+    actual = len(local_tools.TOOLS)
+    pattern = re.compile(
+        r"(\d+) local tools?"
+        r"|(\d+) local \+"
+        r"|tools?,? not (\d+)\b"
+    )
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    claimed = {int(g) for m in pattern.finditer(readme) for g in m.groups() if g}
+    if not claimed:
+        check("README.md: states a tool count", False, "no tool-count phrasing found")
+    else:
+        check(
+            f"README.md: claims {sorted(claimed)} == actual {actual}",
+            claimed == {actual},
+        )
+
+    claude_md = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    missing = []
+    for module in local_tools.MODULES:
+        src = inspect.getsourcefile(module)
+        name = os.path.basename(src) if src else module.__name__
+        if name not in claude_md:
+            missing.append(name)
+    check(
+        "CLAUDE.md: every local-tool module file is mentioned somewhere",
+        not missing, str(missing),
+    )
+
+
 def check_dagent_and_workers() -> None:
     """`/dagent` must withhold the local tools, not merely discourage them.
 
@@ -1553,6 +1619,7 @@ def main() -> int:
         check_dead_worker_skipped,
         check_fanout_and_results,
         check_local_tools,
+        check_docs_match_code,
         check_dagent_and_workers,
         check_clear_and_diagnostics,
         check_run_loop_tool_use_lifecycle,
