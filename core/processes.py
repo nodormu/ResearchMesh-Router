@@ -271,6 +271,30 @@ def _resolve_reply(step: dict) -> tuple[str, bool, str | None]:
     return first_line, True, None
 
 
+def _redact(transcript: str, secret_values: list[str]) -> str:
+    """Replace every occurrence of every value in `secret_values` anywhere
+    in `transcript` with `***` — not just the one line where a step
+    actually sent it.
+
+    This is the fix for a real, live-caught bug, not a defensive-only
+    measure: the previous design only ever substituted "***" at the exact
+    call site that SENT a secret reply, which correctly hid it from that one
+    line but did nothing about the child process printing the same value
+    back out on its OWN, later, as unrelated output (confirmed live: a
+    prompt/echo test script — `read -s -p ...; echo "GOT:[$val]"` — put a
+    real `pass`-sourced secret in plain text into the returned transcript,
+    on the `echo` line, which this function's call site never touched
+    before). Scrubbing the complete, final transcript for every known
+    secret value, wherever it appears, closes that gap regardless of why or
+    how the value ended up repeated. Empty values are skipped — replacing
+    "" would insert `***` between every character.
+    """
+    for value in set(secret_values):
+        if value:
+            transcript = transcript.replace(value, "***")
+    return transcript
+
+
 def _run(tool_input: dict) -> str:
     try:
         import pexpect
@@ -333,7 +357,14 @@ def _run(tool_input: dict) -> str:
 
             transcript.append((child.before or "") + (child.after or ""))
             child.sendline(reply)
-            transcript.append("***\n" if is_secret else reply + "\n")
+            # Appended here as the real value, unconditionally -- NOT "***"
+            # even when `is_secret` is true. Redaction happens exactly once,
+            # at the very end, via `_redact()` over the COMPLETE transcript
+            # (see that function's own docstring for why appending "***"
+            # only at this one call site was the actual bug: it missed the
+            # secret entirely if the child process later echoed it back on
+            # its own, in unrelated output this code never touches here).
+            transcript.append(reply + "\n")
             matched += 1
 
         # Drain whatever the program prints after the last answer.
@@ -350,9 +381,14 @@ def _run(tool_input: dict) -> str:
         except (OSError, pexpect.ExceptionPexpect) as e:
             print(f"[processes] child.close failed (ignored): {e}")
 
+    full_transcript = _redact(
+        "".join(transcript),
+        secret_values=[reply for reply, is_secret in resolved_replies if is_secret],
+    )
+
     return json.dumps(
         {
-            "transcript": clip("".join(transcript), _MAX_TRANSCRIPT),
+            "transcript": clip(full_transcript, _MAX_TRANSCRIPT),
             "steps_matched": matched,
             "steps_total": len(steps),
             "exit_status": child.exitstatus,

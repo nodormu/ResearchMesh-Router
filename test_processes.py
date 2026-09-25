@@ -22,6 +22,7 @@ touching real encryption or timing on an actual passphrase cache.
 import asyncio
 import json
 import os
+import shlex
 import stat
 import sys
 import tempfile
@@ -47,6 +48,25 @@ def call(mod, tool_input: dict) -> dict:
 PROMPT_CMD = 'read -s -p "Enter: " val; echo "GOT:[$val]"'
 
 
+def match_cmd(expected: str) -> str:
+    """A prompt whose own script compares the received value against
+    `expected` INSIDE the shell, printing only MATCH/MISMATCH — never the
+    real value itself. Used for "did the child receive the correct value"
+    checks now that redaction correctly scrubs every occurrence of a secret
+    (see `check_secret_redacted_even_when_echoed_back_later`): a test that
+    verified correctness by echoing the raw value back and inspecting the
+    transcript would be checking for something redaction is now supposed to
+    remove, which is backwards. `PROMPT_CMD`'s echo-back style is kept
+    on purpose for the one test that specifically needs a secret to leak
+    into unrelated output, to prove redaction now catches it anyway.
+    """
+    return (
+        f'read -s -p "Enter: " val; '
+        f'if [ "$val" = {shlex.quote(expected)} ]; then echo "GOT:MATCH"; '
+        f'else echo "GOT:MISMATCH"; fi'
+    )
+
+
 def check_existing_literal_send_unaffected(mod) -> None:
     print("existing behavior: literal `send` + `secret` unaffected")
     r = call(mod, {
@@ -58,11 +78,11 @@ def check_existing_literal_send_unaffected(mod) -> None:
     check("non-secret send appears in transcript", "plaintext123" in r.get("transcript", "").split("GOT:")[0], str(r))
 
     r = call(mod, {
-        "command": PROMPT_CMD,
+        "command": match_cmd("shouldberedacted"),
         "steps": [{"expect": "Enter: ", "send": "shouldberedacted", "secret": True}],
     })
-    check("secret:true still redacts the echoed send", "shouldberedacted" not in r.get("transcript", "").split("GOT:")[0], str(r))
-    check("child still received the real value despite redaction", "GOT:[shouldberedacted]" in r.get("transcript", ""), str(r))
+    check("secret:true still redacts the echoed send", "shouldberedacted" not in r.get("transcript", ""), str(r))
+    check("child still received the real value despite redaction", "GOT:MATCH" in r.get("transcript", ""), str(r))
 
 
 def check_send_env_happy_path(mod) -> None:
@@ -70,14 +90,13 @@ def check_send_env_happy_path(mod) -> None:
     os.environ["_TEST_INTERACTIVE_RUN_SECRET"] = "s3cr3t-from-env-9f8a"
     try:
         r = call(mod, {
-            "command": PROMPT_CMD,
+            "command": match_cmd("s3cr3t-from-env-9f8a"),
             "steps": [{"expect": "Enter: ", "send_env": "_TEST_INTERACTIVE_RUN_SECRET"}],
         })
         check("no error", "error" not in r, str(r))
-        check("child received the real env value", "GOT:[s3cr3t-from-env-9f8a]" in r.get("transcript", ""), str(r))
-        before_echo = r.get("transcript", "").split("GOT:")[0]
-        check("real value NOT in the pre-echo portion of the transcript", "s3cr3t-from-env-9f8a" not in before_echo, before_echo)
-        check("redaction marker present instead", "***" in before_echo, before_echo)
+        check("child received the real env value", "GOT:MATCH" in r.get("transcript", ""), str(r))
+        check("real value NOT anywhere in the transcript", "s3cr3t-from-env-9f8a" not in r.get("transcript", ""), str(r))
+        check("redaction marker present instead", "***" in r.get("transcript", ""), str(r))
     finally:
         del os.environ["_TEST_INTERACTIVE_RUN_SECRET"]
 
@@ -131,14 +150,13 @@ def check_send_secret_happy_path(mod) -> None:
     print("send_secret: real value reaches the child, never appears unredacted in transcript")
     with _FakePassOnPath():
         r = call(mod, {
-            "command": PROMPT_CMD,
+            "command": match_cmd("fake-secret-value-9k2m"),
             "steps": [{"expect": "Enter: ", "send_secret": "existing-entry"}],
         })
     check("no error", "error" not in r, str(r))
-    check("child received the value pass show printed", "GOT:[fake-secret-value-9k2m]" in r.get("transcript", ""), str(r))
-    before_echo = r.get("transcript", "").split("GOT:")[0]
-    check("real value NOT in the pre-echo portion of the transcript", "fake-secret-value-9k2m" not in before_echo, before_echo)
-    check("redaction marker present instead", "***" in before_echo, before_echo)
+    check("child received the value pass show printed", "GOT:MATCH" in r.get("transcript", ""), str(r))
+    check("real value NOT anywhere in the transcript", "fake-secret-value-9k2m" not in r.get("transcript", ""), str(r))
+    check("redaction marker present instead", "***" in r.get("transcript", ""), str(r))
 
 
 def check_send_secret_missing_entry(mod) -> None:
@@ -184,6 +202,29 @@ def check_send_secret_timeout(mod) -> None:
     check("returns an error", "error" in r, str(r))
     check("error explains the likely cause (unanswerable passphrase prompt)", "passphrase" in r.get("error", ""), str(r))
     check("no transcript leaked through (never spawned)", "transcript" not in r, str(r))
+
+
+def check_secret_redacted_even_when_echoed_back_later(mod) -> None:
+    print("regression: a secret value is scrubbed EVERYWHERE in the "
+          "transcript, not just on the line where it was sent -- this is "
+          "a real bug that was caught live, not a hypothetical")
+    os.environ["_TEST_ECHO_BACK_SECRET"] = "Jum@nji23Suck$2#"
+    try:
+        r = call(mod, {
+            "command": PROMPT_CMD,
+            "steps": [{"expect": "Enter: ", "send_env": "_TEST_ECHO_BACK_SECRET"}],
+        })
+    finally:
+        del os.environ["_TEST_ECHO_BACK_SECRET"]
+    check("no error", "error" not in r, str(r))
+    transcript = r.get("transcript", "")
+    check(
+        "real value does not appear ANYWHERE, including the child's own later echo",
+        "Jum@nji23Suck$2#" not in transcript,
+        transcript,
+    )
+    check("both occurrences (send line AND echoed-back line) show the redaction marker",
+          transcript.count("***") == 2, transcript)
 
 
 def check_send_file_not_available(mod) -> None:
@@ -234,6 +275,8 @@ def main() -> int:
     check_send_secret_pass_not_installed(mod)
     print()
     check_send_secret_timeout(mod)
+    print()
+    check_secret_redacted_even_when_echoed_back_later(mod)
     print()
     check_send_file_not_available(mod)
     print()
