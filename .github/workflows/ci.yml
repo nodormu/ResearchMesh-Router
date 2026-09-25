@@ -94,6 +94,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history, not the default shallow clone -- the commit-message
+          # scan below needs every commit, not just the tip, to be meaningful.
+          fetch-depth: 0
+      # Complements the tracked-file check below: neither `git grep` on
+      # tracked files nor gitleaks' default mode scans commit MESSAGE text at
+      # all (confirmed live, 2026-09-25, after a real key ended up in a
+      # commit message rather than a file and sailed through both unnoticed).
+      # This closes that gap directly.
+      - name: No literal credentials in commit messages
+        run: |
+          set -euo pipefail
+          if git log --all --format=%B | grep -nIE 'sk-ant-(api03|admin01)-[A-Za-z0-9_-]{20,}'; then
+            echo "::error::A commit MESSAGE contains what looks like a real Anthropic API key."
+            exit 1
+          fi
+          if git log --all --format=%B | grep -nIE '(AKIA|ASIA)[A-Z0-9]{16}'; then
+            echo "::error::A commit MESSAGE contains what looks like a real AWS access key."
+            exit 1
+          fi
+          if git log --all --format=%B | grep -nIE 'gh[pousr]_[A-Za-z0-9]{20,}'; then
+            echo "::error::A commit MESSAGE contains what looks like a real GitHub token."
+            exit 1
+          fi
+          echo "no committed credentials found in commit messages"
       - name: No literal credentials in tracked files
         run: |
           set -euo pipefail

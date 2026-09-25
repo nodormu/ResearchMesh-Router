@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# commit-msg hook: reject a commit if its MESSAGE (not just tracked files)
+# contains what looks like a real secret. Added 2026-09-25 after a live
+# incident: a commit message meant to say the literal text
+# "$ANTHROPIC_API_KEY" instead got shell-expanded into the real key value,
+# which then sat in public GitHub history undetected by every file-content
+# scanner (git grep in CI, gitleaks default mode) since neither of those
+# tools scans commit message text at all -- only this hook, and the
+# corresponding CI step, actually look here.
+set -euo pipefail
+msg_file="$1"
+
+fail=0
+
+# Known-format provider keys, checked directly -- fast, zero dependency,
+# always runs even if gitleaks isn't installed.
+if grep -nIE 'sk-ant-(api03|admin01)-[A-Za-z0-9_-]{20,}' "$msg_file"; then
+  echo "COMMIT REJECTED: commit message contains what looks like a real Anthropic API key." >&2
+  fail=1
+fi
+if grep -nIE '(AKIA|ASIA)[A-Z0-9]{16}' "$msg_file"; then
+  echo "COMMIT REJECTED: commit message contains what looks like a real AWS access key." >&2
+  fail=1
+fi
+if grep -nIE 'gh[pousr]_[A-Za-z0-9]{20,}' "$msg_file"; then
+  echo "COMMIT REJECTED: commit message contains what looks like a real GitHub token." >&2
+  fail=1
+fi
+
+# Broader net: hand the message text to gitleaks itself (current version,
+# ~/.local/bin/gitleaks, not the stale apt one) if it's on PATH. Catches
+# other known provider formats the three hand-picked checks above don't.
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks detect --no-git --source "$msg_file" --no-banner 2>/tmp/gitleaks_commit_msg_check.log; then
+    if grep -q "leaks found" /tmp/gitleaks_commit_msg_check.log 2>/dev/null || [ -s /tmp/gitleaks_commit_msg_check.log ]; then
+      echo "COMMIT REJECTED: gitleaks flagged the commit message text as containing a secret:" >&2
+      cat /tmp/gitleaks_commit_msg_check.log >&2
+      fail=1
+    fi
+  fi
+fi
+
+if [ "$fail" -eq 1 ]; then
+  echo "" >&2
+  echo "If this is a documentation reference to an env var name (e.g. \$ANTHROPIC_API_KEY)," >&2
+  echo "make sure the commit message was written with the \$VAR inside SINGLE quotes in the" >&2
+  echo "shell command that created it, or via 'git commit -F <file>', so the shell never" >&2
+  echo "expands it into a real value. Fix the message and try again." >&2
+  exit 1
+fi
+
+exit 0
