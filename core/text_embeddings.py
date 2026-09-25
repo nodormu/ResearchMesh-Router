@@ -16,10 +16,11 @@ config.toml on every call rather than cached at import time, so uncommenting
 a `url` (e.g. via the `config_edit` tool) takes effect on the next call
 without restarting the app.
 
-Requires:  pip install httpx        (NOT pulled in by `anthropic` anymore as
-                                      of anthropic>=1 -- its own HTTP layer moved to
-                                      httpx2 -- listed explicitly in requirements.txt
-                                      as an independent dependency)
+Requires:  pip install httpx2       (already pulled in transitively by both
+                                      `anthropic` and `mcp` -- listed explicitly in
+                                      requirements.txt anyway, since this module
+                                      imports it directly rather than relying on
+                                      that transitive pull-in)
 """
 
 import asyncio
@@ -125,15 +126,14 @@ def _run(tool_input: dict) -> str:
     timeout = float(config.get("timeout", 30))
 
     try:
-        import httpx
+        import httpx2
     except ImportError:
         return json.dumps(
             {
-                "error": "httpx is not installed — `pip install httpx` to "
-                "enable the text_embeddings tool (an independent "
-                "requirement as of anthropic>=1, which moved its own "
-                "HTTP layer to httpx2 and no longer pulls in plain "
-                "httpx for you)"
+                "error": "httpx2 is not installed — `pip install httpx2` to "
+                "enable the text_embeddings tool (already pulled in transitively by "
+                "both `anthropic` and `mcp`, but listed explicitly since "
+                "this module imports it directly)"
             }
         )
 
@@ -157,9 +157,9 @@ def _run(tool_input: dict) -> str:
         payload["model"] = model
 
     try:
-        response = httpx.post(url, json=payload, headers=headers or None, timeout=timeout)
+        response = httpx2.post(url, json=payload, headers=headers or None, timeout=timeout)
         response.raise_for_status()
-    except httpx.HTTPError as e:
+    except httpx2.HTTPError as e:
         return json.dumps({"error": f"request to {url} failed: {e}"})
 
     try:

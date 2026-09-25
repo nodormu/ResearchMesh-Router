@@ -297,7 +297,7 @@ worker MCP tools**.
   `timeout_seconds`.** Both defaults are too short for a worker that runs a whole
   agentic loop before replying — `create_mcp_http_client` defaults to a 300s read
   timeout — and when it fires the work is already done on the far side and lost.
-  It is applied in two independent places: the httpx read timeout, and
+  It is applied in two independent places: the httpx2 read timeout, and
   `ClientSession(read_timeout_seconds=…)`, which is a plain float in mcp 2.x and
   was a `timedelta` in 1.x. Connect stays at 15s deliberately, so an
   switched-off machine fails fast instead of hanging the turn.

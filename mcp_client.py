@@ -34,7 +34,7 @@ class MCPClient:
     already done and unrecoverable on this side.
 
     It is applied in two places, because they time out independently:
-      - the httpx read timeout, which governs waiting on the HTTP response;
+      - the httpx2 read timeout, which governs waiting on the HTTP response;
       - ClientSession's `read_timeout_seconds`, the MCP-level per-request
         deadline (a plain float in mcp 2.x; it was a timedelta in 1.x).
     """

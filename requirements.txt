@@ -57,14 +57,19 @@ duckdb>=0.10             # `sql_query` — SQL over CSV/Parquet/JSON (core/data.
 send2trash>=1.8          # `trash` — recoverable deletes (core/files.py)
 pyautogui>=0.9.54        # `computer` — screen capture + mouse/keyboard (core/computer.py)
 pillow>=10.0             # `computer` — screenshot encode/resize; also pyautogui's backend
-httpx>=0.24              # `text_embeddings`/`vision_query` — calls your own
+httpx2                   # `text_embeddings`/`vision_query` — calls your own
                          # embedding/vision server (core/text_embeddings.py,
-                         # core/vision.py). NOT guaranteed by `anthropic` anymore
-                         # as of anthropic>=1 (its own HTTP layer moved to httpx2
-                         # -- verified live, anthropic 1.8.0's own metadata no
-                         # longer lists httpx as a dependency at all, unlike
-                         # 0.116.0 which did) -- an independent, explicit
-                         # requirement here now, not a free ride.
+                         # core/vision.py). Already pulled in transitively by
+                         # both `anthropic` and `mcp` (confirmed live: both list
+                         # it in their own metadata), listed explicitly here
+                         # since these modules import it directly rather than
+                         # relying on that transitive pull-in. Switched from
+                         # plain `httpx` -- `httpx` itself has seen no commits
+                         # in ~7 months as of this writing (confirmed live
+                         # against its real GitHub history), while `httpx2` is
+                         # Pydantic's actively-maintained, API-compatible
+                         # continuation (confirmed via its own PyPI page) --
+                         # and it's already installed anyway.
 piper-tts                # `speak` — local neural TTS (core/speak.py), invoked
                          # as `python3 -m piper` (its CLI entry point). **Not**
                          # `sudo apt install piper` — that installs an unrelated
