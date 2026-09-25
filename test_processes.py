@@ -2,19 +2,29 @@
 
     python test_processes.py
 
-Covers `interactive_run`'s `send_env` step field — added so a
+Covers `interactive_run`'s `send_env`/`send_secret` step fields — added so a
 password/token prompt can be answered without the real value ever having to
 be written into the tool call itself (see the module's own docstring for the
 full rationale). Spawns real `bash -c 'read -s -p ... ; echo ...'` prompts
 via pexpect (through the real `_run()`, not a re-implementation) to confirm
 the actual value reaches the child process correctly AND never appears in
 the plain, unredacted transcript — not just that the code parses.
+
+`send_secret` shells out to a REAL `pass` binary, but this suite does not
+depend on a real GPG key/password-store being set up — a tiny fake `pass`
+script (plain shell, no gpg at all) is placed on `PATH` ahead of any real
+one for the duration of these specific checks, giving fully deterministic,
+fast, CI-safe coverage of `_resolve_reply`'s own logic (found entry, missing
+entry, `pass` altogether absent, a hung/unanswerable prompt) without ever
+touching real encryption or timing on an actual passphrase cache.
 """
 
 import asyncio
 import json
 import os
+import stat
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -84,6 +94,98 @@ def check_send_env_missing_var(mod) -> None:
     check("no transcript/exit_status leaked through (never spawned)", "transcript" not in r, str(r))
 
 
+class _FakePassOnPath:
+    """Puts a tiny fake `pass` script on `PATH`, ahead of any real one, for
+    the duration of a `with` block. Plain shell, zero gpg/pass dependency —
+    `show existing-entry` prints a known value, `show sleeps-forever` blocks
+    forever (simulating an unanswerable pinentry prompt), anything else
+    fails with the same shape of stderr message a real `pass` would give.
+    """
+
+    SCRIPT = """#!/bin/sh
+if [ "$1" = "show" ]; then
+    case "$2" in
+        existing-entry) echo "fake-secret-value-9k2m"; exit 0 ;;
+        sleeps-forever) sleep 999; exit 0 ;;
+        *) echo "Error: $2 is not in the password store." >&2; exit 1 ;;
+    esac
+fi
+exit 1
+"""
+
+    def __enter__(self):
+        self._tmpdir = tempfile.mkdtemp()
+        path = os.path.join(self._tmpdir, "pass")
+        with open(path, "w") as f:
+            f.write(self.SCRIPT)
+        os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+        self._old_path = os.environ["PATH"]
+        os.environ["PATH"] = self._tmpdir + os.pathsep + self._old_path
+        return self
+
+    def __exit__(self, *exc):
+        os.environ["PATH"] = self._old_path
+
+
+def check_send_secret_happy_path(mod) -> None:
+    print("send_secret: real value reaches the child, never appears unredacted in transcript")
+    with _FakePassOnPath():
+        r = call(mod, {
+            "command": PROMPT_CMD,
+            "steps": [{"expect": "Enter: ", "send_secret": "existing-entry"}],
+        })
+    check("no error", "error" not in r, str(r))
+    check("child received the value pass show printed", "GOT:[fake-secret-value-9k2m]" in r.get("transcript", ""), str(r))
+    before_echo = r.get("transcript", "").split("GOT:")[0]
+    check("real value NOT in the pre-echo portion of the transcript", "fake-secret-value-9k2m" not in before_echo, before_echo)
+    check("redaction marker present instead", "***" in before_echo, before_echo)
+
+
+def check_send_secret_missing_entry(mod) -> None:
+    print("send_secret: entry not in the store fails clearly, before spawning anything")
+    with _FakePassOnPath():
+        r = call(mod, {
+            "command": PROMPT_CMD,
+            "steps": [{"expect": "Enter: ", "send_secret": "no-such-entry"}],
+        })
+    check("returns an error", "error" in r, str(r))
+    check("error surfaces pass's own stderr text", "not in the password store" in r.get("error", ""), str(r))
+    check("no transcript/exit_status leaked through (never spawned)", "transcript" not in r, str(r))
+
+
+def check_send_secret_pass_not_installed(mod) -> None:
+    print("send_secret: pass genuinely absent from PATH fails clearly")
+    old_path = os.environ["PATH"]
+    try:
+        os.environ["PATH"] = "/nonexistent-empty-dir"
+        r = call(mod, {
+            "command": PROMPT_CMD,
+            "steps": [{"expect": "Enter: ", "send_secret": "anything"}],
+        })
+    finally:
+        os.environ["PATH"] = old_path
+    check("returns an error", "error" in r, str(r))
+    check("error says pass isn't installed", "not installed" in r.get("error", ""), str(r))
+
+
+def check_send_secret_timeout(mod) -> None:
+    print("send_secret: an unanswerable prompt times out with a clear "
+          "message instead of hanging for the full interactive_run timeout")
+    old_timeout = mod._SEND_SECRET_TIMEOUT
+    mod._SEND_SECRET_TIMEOUT = 1
+    try:
+        with _FakePassOnPath():
+            r = call(mod, {
+                "command": PROMPT_CMD,
+                "steps": [{"expect": "Enter: ", "send_secret": "sleeps-forever"}],
+            })
+    finally:
+        mod._SEND_SECRET_TIMEOUT = old_timeout
+    check("returns an error", "error" in r, str(r))
+    check("error explains the likely cause (unanswerable passphrase prompt)", "passphrase" in r.get("error", ""), str(r))
+    check("no transcript leaked through (never spawned)", "transcript" not in r, str(r))
+
+
 def check_send_file_not_available(mod) -> None:
     print("send_file does not exist as an option -- treated as an unknown "
           "field, resolved as if only send/send_env were considered")
@@ -96,7 +198,7 @@ def check_send_file_not_available(mod) -> None:
 
 
 def check_conflicting_and_missing_sources(mod) -> None:
-    print("validation: exactly one of send/send_env required")
+    print("validation: exactly one of send/send_env/send_secret required")
     r = call(mod, {
         "command": PROMPT_CMD,
         "steps": [{"expect": "Enter: ", "send": "a", "send_env": "PATH"}],
@@ -105,9 +207,15 @@ def check_conflicting_and_missing_sources(mod) -> None:
 
     r = call(mod, {
         "command": PROMPT_CMD,
+        "steps": [{"expect": "Enter: ", "send_env": "PATH", "send_secret": "x"}],
+    })
+    check("both send_env + send_secret is an error", "error" in r, str(r))
+
+    r = call(mod, {
+        "command": PROMPT_CMD,
         "steps": [{"expect": "Enter: "}],
     })
-    check("neither send nor send_env is an error", "error" in r, str(r))
+    check("neither send nor send_env/send_secret is an error", "error" in r, str(r))
 
 
 def main() -> int:
@@ -118,6 +226,14 @@ def main() -> int:
     check_send_env_happy_path(mod)
     print()
     check_send_env_missing_var(mod)
+    print()
+    check_send_secret_happy_path(mod)
+    print()
+    check_send_secret_missing_entry(mod)
+    print()
+    check_send_secret_pass_not_installed(mod)
+    print()
+    check_send_secret_timeout(mod)
     print()
     check_send_file_not_available(mod)
     print()

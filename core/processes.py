@@ -32,10 +32,23 @@ to ending up on disk either (shell history if typed interactively and not
 suppressed, or a startup file if `export`ed there for persistence) — this
 tool cannot enforce how the caller manages the variable it names — but it
 does not REQUIRE a new plaintext file to exist the way a file-based option
-would. Real at-rest protection (encrypted, unlocked via the desktop session
-rather than sitting in plain text either way) would mean a proper OS-keyring
-integration (`secret-tool`/libsecret is already installed on this machine)
-instead — a genuinely different, stronger mechanism, not implemented here.
+would.
+
+A third source, `send_secret`, closes that remaining gap for real: the NAME
+of a `pass` (the standard unix password manager, passwordstore.org) entry —
+resolved locally via `pass show <name>`, whose real value is genuinely
+encrypted at rest (GPG), not plaintext-if-you're-careful the way `send_env`
+is. `pass`/`gnupg`/`pinentry-curses` need no GUI, no D-Bus session, no
+desktop environment of any kind — confirmed to work identically on a
+graphical desktop or a bare SSH-only server, and available (directly or via
+EPEL) on Ubuntu/Debian/Fedora/Arch/RHEL/CentOS/Oracle Linux 8+ (RHEL-family
+7 is the one real gap — `pass` was dropped from EPEL7 in 2019). Rejected
+`secret-tool`/libsecret for this same purpose: it requires a D-Bus Secret
+Service daemon tied to a logged-in graphical session (GNOME Keyring, KDE's
+ksecretd — confirmed both can be running simultaneously on the SAME machine,
+live, on this one), which simply doesn't exist on a headless server at all —
+not a "which desktop environment" gap, a "no desktop environment" gap.
+`pass` has no such requirement.
 
 Requires:  pip install pexpect
 """
@@ -43,6 +56,7 @@ Requires:  pip install pexpect
 import asyncio
 import json
 import os
+import subprocess
 
 from core.claude_learned_schemas import SHELL_EXECUTABLE, apply_shell_prelude
 from core.output import clip
@@ -57,12 +71,13 @@ TOOLS = [
             "'Are you sure? [y/N]', partitioning tools, installers, or a REPL — "
             "since the bash tool has no stdin and will simply hang. Each step "
             "waits for a regex to appear, then sends a line. For a password or "
-            "token specifically, use a step's `send_env` instead of `send` — "
-            "the real value is read locally from an environment variable and "
-            "never has to be written into this call at all, unlike a literal "
-            "`send`, which the user has to tell you and you have to write "
-            "down to use. Returns JSON with the terminal transcript and the "
-            "exit status."
+            "token specifically, use a step's `send_env`/`send_secret` "
+            "instead of `send` — the real value is read locally (from an "
+            "environment variable, or from a `pass` password-store entry for "
+            "genuine at-rest encryption) and never has to be written into "
+            "this call at all, unlike a literal `send`, which the user has "
+            "to tell you and you have to write down to use. Returns JSON "
+            "with the terminal transcript and the exit status."
         ),
         "input_schema": {
             "type": "object",
@@ -94,13 +109,13 @@ TOOLS = [
                                 "type": "string",
                                 "description": (
                                     "Literal line to send once it matches. "
-                                    "Exactly one of `send`/`send_env` is "
-                                    "required per step. Use this for "
-                                    "non-secret input (a username, 'yes', a "
-                                    "menu choice) — for a password or "
-                                    "token, use `send_env` instead so the "
-                                    "real value never has to be written "
-                                    "into this call at all."
+                                    "Exactly one of `send`/`send_env`/"
+                                    "`send_secret` is required per step. Use "
+                                    "this for non-secret input (a username, "
+                                    "'yes', a menu choice) — for a password "
+                                    "or token, use `send_env`/`send_secret` "
+                                    "instead so the real value never has to "
+                                    "be written into this call at all."
                                 ),
                             },
                             "send_env": {
@@ -120,15 +135,38 @@ TOOLS = [
                                     "spawning anything."
                                 ),
                             },
+                            "send_secret": {
+                                "type": "string",
+                                "description": (
+                                    "Name of a `pass` (the standard unix "
+                                    "password manager) entry — resolved "
+                                    "locally via `pass show <name>` and "
+                                    "sent, never written into this tool "
+                                    "call. Prefer this over `send_env` when "
+                                    "genuine at-rest encryption matters: a "
+                                    "`pass` entry is GPG-encrypted on disk, "
+                                    "unlike an env var, which is only "
+                                    "plaintext-free if the user is careful "
+                                    "about how they set it. Needs no "
+                                    "desktop environment or GUI — works "
+                                    "identically on a headless server. "
+                                    "Always treated as secret in the "
+                                    "returned transcript, regardless of the "
+                                    "`secret` field. Errors clearly if "
+                                    "`pass`/the named entry isn't available, "
+                                    "before spawning anything."
+                                ),
+                            },
                             "secret": {
                                 "type": "boolean",
                                 "description": (
                                     "Redact this step's `send` response from "
                                     "the returned transcript. Only meaningful "
-                                    "for a literal `send` — `send_env` is "
-                                    "always redacted unconditionally, since "
-                                    "its entire point is keeping the real "
-                                    "value out of anything you see."
+                                    "for a literal `send` — `send_env`/"
+                                    "`send_secret` are always redacted "
+                                    "unconditionally, since their entire "
+                                    "point is keeping the real value out of "
+                                    "anything you see."
                                 ),
                             },
                         },
@@ -151,6 +189,13 @@ TOOLS = [
 _TOOL_NAMES = {t["name"] for t in TOOLS}
 _MAX_TRANSCRIPT = 12000
 _DEFAULT_TIMEOUT = 30
+# How long `send_secret`'s `pass show` subprocess gets before giving up —
+# see `_resolve_reply`'s own docstring for why this exists at all (an
+# unanswerable pinentry prompt with no terminal here would otherwise hang
+# for the full interactive_run timeout). A plain module attribute, not a
+# function default, specifically so test_processes.py can shrink it instead
+# of a real test run actually waiting out the production value.
+_SEND_SECRET_TIMEOUT = 10
 
 
 def handles(name: str) -> bool:
@@ -166,27 +211,64 @@ async def execute(name: str, tool_input: dict) -> str:
 def _resolve_reply(step: dict) -> tuple[str, bool, str | None]:
     """Return (reply_text, is_secret, error) for one step.
 
-    Exactly one of `send`/`send_env` must be present — anything else (zero,
-    or both) is a caller error, returned as `error` rather than silently
-    guessing which one was meant. `send_env` always comes back with
-    `is_secret=True`; a literal `send` respects the step's own `secret`
-    field (default `False`), matching this tool's existing behavior for
-    that case unchanged.
+    Exactly one of `send`/`send_env`/`send_secret` must be present —
+    anything else (zero, or more than one) is a caller error, returned as
+    `error` rather than silently guessing which one was meant. `send_env`/
+    `send_secret` always come back with `is_secret=True`; a literal `send`
+    respects the step's own `secret` field (default `False`), matching this
+    tool's existing behavior for that case unchanged.
+
+    `send_secret` shells out to `pass show <name>` with a 10-second timeout,
+    not an unbounded wait — if `pass`/`gpg` end up needing a passphrase
+    prompt (the GPG key isn't already unlocked in `gpg-agent`'s cache) there
+    is no terminal here for `pinentry` to use, so this would otherwise hang
+    for the full `interactive_run` timeout on top of whatever the REAL
+    command's own steps needed, indistinguishable from a genuine hang. The
+    error message says so explicitly rather than just "timed out" — unlock
+    the key once, manually, in a real terminal first, which caches it in
+    `gpg-agent` for a while and lets subsequent calls succeed silently.
     """
-    sources = [k for k in ("send", "send_env") if k in step]
+    sources = [k for k in ("send", "send_env", "send_secret") if k in step]
     if len(sources) == 0:
-        return "", False, "must include one of `send`, `send_env`"
+        return "", False, "must include one of `send`, `send_env`, `send_secret`"
     if len(sources) > 1:
-        return "", False, f"only one of `send`/`send_env` allowed, got {sources}"
+        return "", False, f"only one of `send`/`send_env`/`send_secret` allowed, got {sources}"
 
     if "send" in step:
         return str(step["send"]), bool(step.get("secret")), None
 
-    var_name = str(step["send_env"])
-    value = os.environ.get(var_name)
-    if value is None:
-        return "", False, f"environment variable {var_name!r} is not set"
-    return value, True, None
+    if "send_env" in step:
+        var_name = str(step["send_env"])
+        value = os.environ.get(var_name)
+        if value is None:
+            return "", False, f"environment variable {var_name!r} is not set"
+        return value, True, None
+
+    entry_name = str(step["send_secret"])
+    try:
+        result = subprocess.run(
+            ["pass", "show", entry_name],
+            capture_output=True,
+            text=True,
+            timeout=_SEND_SECRET_TIMEOUT,
+            check=False,
+        )
+    except FileNotFoundError:
+        return "", False, "`pass` is not installed (see the module docstring for setup)"
+    except subprocess.TimeoutExpired:
+        return "", False, (
+            f"`pass show {entry_name!r}` did not return within "
+            f"{_SEND_SECRET_TIMEOUT}s — likely waiting on a GPG passphrase "
+            "prompt with no terminal here to answer it. Unlock the key "
+            "once, manually, in your own terminal (`pass show ...` there) "
+            "first — gpg-agent caches it for a while afterward, and this "
+            "call will then succeed silently."
+        )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        return "", False, f"`pass show {entry_name!r}` failed: {detail}"
+    first_line = result.stdout.splitlines()[0] if result.stdout else ""
+    return first_line, True, None
 
 
 def _run(tool_input: dict) -> str:
