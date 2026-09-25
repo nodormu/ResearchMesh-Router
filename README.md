@@ -352,41 +352,13 @@ All of the above run entirely on this machine — none of it needs a worker conf
 Once you've added one (see [Adding workers](#adding-workers) below), `/workers` and
 `/dagent` are the natural next things to try.
 
-### 8) interactive_run — secrets must never be typed directly
+### 8) interactive_run — log in without Claude ever seeing your passwords
 
-`interactive_run` answers prompts (passwords, `[y/N]`, ssh host keys) from a script the
-model writes. For a password or token specifically, **never use its plain `send` field**
-— that means typing the real value into the model's own request, which sends it to
-Anthropic twice (once when you tell the model, once when the model writes it into the
-call) before it's ever redacted from what comes back.
-
-Use one of these instead — the model only ever sees a *name*, never the real value:
-
-- **`send_env`** — name of an environment variable you set yourself, in your own shell.
-  No setup beyond `export SOMETHING=...`. Not fully immune to ending up in plain text
-  (shell history, a startup file) — just doesn't *require* it the way a file would.
-- **`send_secret`** — name of a [`pass`](https://www.passwordstore.org/) entry, or the
-  literal string `"?"` if you don't know which one to use. Real, GPG-encrypted-at-rest
-  storage. Needs a one-time setup (below), but is the one option that's actually
-  encrypted, not just "plain text if you're careless." Works identically on a desktop or
-  a headless server — no GUI, no D-Bus, no desktop environment required.
-
-**Any entry name — even an obviously correct one, even the only entry that exists — is
-refused the first time it's ever referenced in a running session.** The tool responds
-with a fixed prompt built from the real vault contents instead of using it:
-```
-please select the cred name I need to use:
-<every real entry, one per line>
-```
-Only a *second* reference to that same name actually proceeds. This is enforced in the
-tool's own code, not just documented behavior — relying on the model to check this on
-its own, every time, without exception, was tried first and was not reliable enough in
-practice. `"?"` triggers the exact same prompt directly, on purpose, if you'd rather ask
-up front than have the first real attempt get refused.
-
-If you plan to use `interactive_run` for anything password-shaped at all, set up
-`send_secret` once and use it — it's not much more work than `send_env` and it's the
-only one of the two that's genuinely secure at rest.
+`interactive_run` can log you into things — sudo, ssh, whatever asks for a password —
+without your password, or your GPG vault passphrase, ever being seen by Claude. You
+need to set this up once (below). After that, whenever a command needs a credential,
+you get a list of the names you saved to pick from, so you never have to remember
+which one it is yourself either.
 
 <details>
 <summary><strong>Full <code>pass</code> vault setup, walkthrough + reference charts (click to expand)</strong></summary>
