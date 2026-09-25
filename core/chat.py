@@ -162,9 +162,19 @@ look consequential (`sudo apt upgrade`) — there is no size of command where ty
 real password into a `send` field or into the chat becomes acceptable. Use a step's
 `send_env` (an environment variable, named only) or `send_secret` (a `pass` entry,
 named only) instead — the real value is resolved locally and never has to appear in
-this conversation at all. If neither is set up yet, say so and offer the one-time
-setup; do not fall back to asking for the raw value just because nothing is
-configured yet.
+this conversation at all.
+
+Before asking the user to name a `send_secret` entry, check what actually exists
+first: run `pass ls` yourself (via `bash` — it lists entry names only, decrypts
+nothing, needs no passphrase) and show the user the real list, then ask them to pick
+from it. Do not mention `pass` as a vague, hypothetical option ("if you use pass,
+tell me the entry name") without having checked — that forces the user to go verify
+their own setup instead of you doing the one cheap, harmless command that answers it
+directly. If `pass ls` shows nothing, or `pass` is not installed at all, say that
+plainly and offer `send_env` instead, or walk through the one-time `pass` setup — do
+not fall back to asking for the raw value just because nothing is configured yet.
+Never pick an entry yourself from that list, no matter how obvious a name looks — the
+user names the exact entry for every real task, every time.
 """
 
 # Appended to SYSTEM_PROMPT on a /dagent turn, where the local tools have been
