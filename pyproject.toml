@@ -13,7 +13,7 @@ requires-python = ">=3.11"   # tomllib (used by main.py) is stdlib only from 3.1
 # the three gates on this list alone, with no browser download, no apt packages
 # and no display.
 dependencies = [
-    "anthropic>=0.51.0",
+    "anthropic>=1,<2",
     "mcp[cli]>=2.0,<3",     # 2.0 is a breaking major — see requirements.txt
     "prompt-toolkit>=3.0.51",
     "pydantic>=2.0",
