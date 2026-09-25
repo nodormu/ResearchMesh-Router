@@ -16,9 +16,10 @@ config.toml on every call rather than cached at import time, so uncommenting
 a `url` (e.g. via the `config_edit` tool) takes effect on the next call
 without restarting the app.
 
-Requires:  pip install httpx        (already pulled in by `anthropic`, listed
-                                      explicitly in requirements.txt for the
-                                      direct import below)
+Requires:  pip install httpx        (NOT pulled in by `anthropic` anymore as
+                                      of anthropic>=1 -- its own HTTP layer moved to
+                                      httpx2 -- listed explicitly in requirements.txt
+                                      as an independent dependency)
 """
 
 import asyncio
@@ -129,8 +130,10 @@ def _run(tool_input: dict) -> str:
         return json.dumps(
             {
                 "error": "httpx is not installed — `pip install httpx` to "
-                "enable the text_embeddings tool (it normally ships already, "
-                "pulled in by the `anthropic` package)"
+                "enable the text_embeddings tool (an independent "
+                "requirement as of anthropic>=1, which moved its own "
+                "HTTP layer to httpx2 and no longer pulls in plain "
+                "httpx for you)"
             }
         )
 

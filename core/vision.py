@@ -25,9 +25,10 @@ may have specifically wanted kept local. See the tool description below,
 which states this expectation directly so it holds even in a fresh session
 that has never read any planning notes about this tool.
 
-Requires:  pip install httpx        (already pulled in by `anthropic`, listed
-                                      explicitly in requirements.txt for the
-                                      direct import below)
+Requires:  pip install httpx        (NOT pulled in by `anthropic` anymore as
+                                      of anthropic>=1 -- its own HTTP layer moved to
+                                      httpx2 -- listed explicitly in requirements.txt
+                                      as an independent dependency)
 """
 
 import asyncio
@@ -215,8 +216,10 @@ def _run(tool_input: dict) -> str:
         return json.dumps(
             {
                 "error": "httpx is not installed — `pip install httpx` to "
-                "enable the vision_query tool (it normally ships already, "
-                "pulled in by the `anthropic` package)"
+                "enable the vision_query tool (an independent "
+                "requirement as of anthropic>=1, which moved its own "
+                "HTTP layer to httpx2 and no longer pulls in plain "
+                "httpx for you)"
             }
         )
 
