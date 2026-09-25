@@ -124,3 +124,24 @@ jobs:
             exit 1
           fi
           echo "no committed credentials found"
+
+  # General-purpose secret scanner, complementing (not replacing) the
+  # targeted regex checks above. Those check THIS app's own token_env/
+  # api_key_env indirection pattern specifically; this instead catches
+  # WELL-KNOWN provider-key formats (AWS, GitHub, Slack, Stripe, etc.)
+  # anywhere in the tree, which the checks above were never designed to
+  # look for. Verified live before adding: does NOT reliably catch an
+  # arbitrary custom self-hosted-service token (e.g. a GPU-box worker's own
+  # bearer token) with no recognized provider signature -- no regex-based
+  # tool does, so the checks above remain the real defense for THIS app's
+  # own config surfaces specifically. No license needed (free for personal
+  # accounts).
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
