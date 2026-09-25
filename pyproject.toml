@@ -40,6 +40,10 @@ dependencies = [
     "piper-tts",              # speak — see requirements.txt for the full note
     "faster-whisper",         # listen — see requirements.txt for the full note
     "ruff>=0.16",             # linter — added by explicit user request, see requirements.txt
+    "mypy>=2.0",              # type checker — used by this project (CI's third gate),
+                              # so it belongs here on the same reasoning as ruff above:
+                              # a real dependency of the project, not a CI-only extra.
+                              # See requirements.txt for the full note.
 ]
 
 # `computer` and `document_convert` additionally need apt packages (python3-tk,
