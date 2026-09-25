@@ -6,45 +6,24 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"   # tomllib (used by main.py) is stdlib only from 3.11
-# The four the app cannot start without. Every local-tool backing lives below
-# instead, in a narrower install surface than requirements.txt's flat install —
-# not tidiness, a real property: each one is imported *inside* its tool's
-# executor, so a missing package costs you that one tool and an install hint,
-# not the app. It is also what lets CI run the three gates on this list alone,
-# with no browser download, no apt packages and no display.
+# Every one of these is fully required by whatever tool it backs -- none of
+# them is dispensable. This array is flat, same as ResearchMesh/-Windows/-Mac,
+# not split into a separate extras group: an earlier version of this file DID
+# split it into a separate PEP 621 extras group, but that split
+# turned out to serve no actual purpose -- CI (.github/workflows/ci.yml)
+# installs its own explicit, narrower package list directly, bypassing this
+# file entirely in both its jobs, and neither README.md nor CLAUDE.md ever
+# documents or recommends `pip install .[tools]` as a real install path (the
+# only place that phrase existed was this file's own comment, which was
+# simply wrong about what the README says). Flattened to match the other 3
+# repos and remove genuinely dead structure, not just reworded around it.
 dependencies = [
     "anthropic>=1,<2",
     "mcp[cli]>=2.0,<3",     # 2.0 is a breaking major — see requirements.txt
     "prompt-toolkit>=3.0.51",
     "pydantic>=2.0",
-    "ruff>=0.16",           # linter — added by explicit user request, see requirements.txt
-]
-# The local-tool backings (playwright, duckdb, httpx2, etc.) belong in
-# [project.optional-dependencies].tools below, NOT here -- they were briefly
-# duplicated into this array by mistake (a "reconcile pyproject.toml against
-# requirements.txt" pass that only checked this array and missed the extras
-# group entirely, wrongly concluding they were absent).
-#
-# Two different INSTALL SURFACES, not a dispensable-vs-required split of
-# packages -- every one of these is fully required by its own tool; none is
-# dispensable. `pip install -r requirements.txt` brings in everything flat,
-# in one command. This file's own minimal `dependencies` array plus the
-# `pip install .[tools]` extra is a NARROWER surface (this repo's own core
-# four packages only, vs. core + every tool backing) that CI/mypy use on
-# purpose, to catch a dependency changing shape underneath the code without
-# pulling in a browser download / apt packages / a display requirement for
-# no extra signal. Neither surface makes any package here skippable -- they
-# name which install command brings a package in, not whether the tool that
-# needs it still works without it.
-
-# `pip install -e ".[tools]"` — the same set requirements.txt installs, which is
-# what the README's quick start tells you to use. `computer` and
-# `document_convert` additionally need apt packages (python3-tk, scrot,
-# libreoffice, pandoc) and `browser_*` needs `playwright install chromium`;
-# none of those can be expressed here.
-[project.optional-dependencies]
-tools = [
     "playwright>=1.40.0",     # browser_*
+    # Local tool backings — imported lazily by the tool that needs them.
     "jupyter_client>=8.9.1",  # python — CurveZMQ encryption; see requirements.txt
     "ipykernel>=7.0",
     "pexpect>=4.9",           # interactive_run
@@ -60,7 +39,12 @@ tools = [
                               # explicitly since these modules import it directly
     "piper-tts",              # speak — see requirements.txt for the full note
     "faster-whisper",         # listen — see requirements.txt for the full note
+    "ruff>=0.16",             # linter — added by explicit user request, see requirements.txt
 ]
+
+# `computer` and `document_convert` additionally need apt packages (python3-tk,
+# scrot, libreoffice, pandoc) and `browser_*` needs `playwright install
+# chromium`; none of those can be expressed here — see requirements.txt.
 
 # `ruff check .` should come back clean — that is the bar for an edit here, the
 # same as in ResearchMesh. This section adds no rules; it only lists exemptions.
