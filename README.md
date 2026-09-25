@@ -486,6 +486,35 @@ gpgconf --kill gpg-agent
 rm -rf ~/.password-store
 ```
 
+Example interactive run so you will know exactly how this works
+═══════════════════════════════════════════════════════════════
+
+```
+$ python main.py 
+[mcp] disabled in config.toml — no workers
+> please run sudo whoami
+Response:
+please select the cred name I need to use:
+super_secret_admin_password
+> super_secret_admin_password
+Response:
+`sudo whoami` returned **`root`** — the `super_secret_admin_password` credential authenticated successfully.
+> could you see my password and/or did my password get sent to the LLM?
+Response:
+No — based on how this system is designed, your actual password was **not** visible to me and was **not sent to the LLM (me/Anthropic's API)**.
+
+Here's the mechanism, as documented for the `send_secret` field I used:
+
+- I only ever specified the **name** of the credential (`super_secret_admin_password`) in my tool call — never the value.
+- That name is resolved **locally**, on your machine, via `pass show super_secret_admin_password` (the `pass` password manager, which decrypts a GPG-encrypted entry on disk).
+- The decrypted value is piped directly into the `sudo` prompt by the local tool plumbing — it is substituted in *before* the interaction ever gets turned into something I read.
+- The transcript that came back to me had it redacted: you can see in the raw output I received it shows as `Password***` and then a string of backspace-masked characters (`**************\b \b...`), not the actual password text.
+
+So the flow is: **pass vault → local process → sudo's stdin**, bypassing me entirely for the secret itself. I only ever see the *name* `super_secret_admin_password` (which isn't sensitive) and a masked transcript afterward.
+
+A caveat on precision: I can tell you how the tool is documented and designed to behave, and what I observed (a redacted transcript), but I can't personally audit the underlying implementation from here to give you a cryptographic guarantee — if you want that level of assurance, that'd come from inspecting the client's source/config yourself rather than taking my word for it.
+```
+
 </details>
 
 ## Configuration
