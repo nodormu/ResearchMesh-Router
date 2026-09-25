@@ -246,6 +246,54 @@ def check_secret_redacted_even_when_echoed_back_later(mod) -> None:
           transcript.count("***") == 2, transcript)
 
 
+def check_send_secret_select_sentinel(mod) -> None:
+    print("send_secret: \"?\" returns the exact hardcoded selection prompt, "
+          "built from REAL vault entries -- not something composed on the "
+          "fly, and correct for nested (folder/entry) paths specifically")
+    store = tempfile.mkdtemp()
+    old_dir = os.environ.get("PASSWORD_STORE_DIR")
+    try:
+        os.makedirs(os.path.join(store, "aws"))
+        open(os.path.join(store, "github.gpg"), "w").close()
+        open(os.path.join(store, "aws", "prod.gpg"), "w").close()
+        os.environ["PASSWORD_STORE_DIR"] = store
+        r = call(mod, {
+            "command": PROMPT_CMD,
+            "steps": [{"expect": "Enter: ", "send_secret": "?"}],
+        })
+        err = r.get("error", "")
+        check("returns an error (step never proceeds)", "error" in r, str(r))
+        check("exact opening line present", "please select the cred name I need to use:" in err, err)
+        check("flat entry present by plain name", "github" in err, err)
+        check("nested entry present with its FULL path, not just the leaf", "aws/prod" in err, err)
+        check("no transcript leaked through (never spawned)", "transcript" not in r, str(r))
+    finally:
+        if old_dir is None:
+            os.environ.pop("PASSWORD_STORE_DIR", None)
+        else:
+            os.environ["PASSWORD_STORE_DIR"] = old_dir
+        import shutil
+        shutil.rmtree(store, ignore_errors=True)
+
+
+def check_send_secret_select_sentinel_empty_store(mod) -> None:
+    print("send_secret: \"?\" against an empty/nonexistent store says so plainly")
+    old_dir = os.environ.get("PASSWORD_STORE_DIR")
+    try:
+        os.environ["PASSWORD_STORE_DIR"] = "/tmp/definitely-does-not-exist-store"
+        r = call(mod, {
+            "command": PROMPT_CMD,
+            "steps": [{"expect": "Enter: ", "send_secret": "?"}],
+        })
+        check("returns an error", "error" in r, str(r))
+        check("says no store found, not a confusing crash", "no password store found" in r.get("error", ""), str(r))
+    finally:
+        if old_dir is None:
+            os.environ.pop("PASSWORD_STORE_DIR", None)
+        else:
+            os.environ["PASSWORD_STORE_DIR"] = old_dir
+
+
 def check_send_file_not_available(mod) -> None:
     print("send_file does not exist as an option -- treated as an unknown "
           "field, resolved as if only send/send_env were considered")
@@ -292,6 +340,10 @@ def main() -> int:
     check_send_secret_missing_entry(mod)
     print()
     check_send_secret_missing_entry_shows_real_available_entries(mod)
+    print()
+    check_send_secret_select_sentinel(mod)
+    print()
+    check_send_secret_select_sentinel_empty_store(mod)
     print()
     check_send_secret_pass_not_installed(mod)
     print()

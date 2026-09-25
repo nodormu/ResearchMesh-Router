@@ -57,6 +57,7 @@ import asyncio
 import json
 import os
 import subprocess
+from pathlib import Path
 
 from core.claude_learned_schemas import SHELL_EXECUTABLE, apply_shell_prelude
 from core.output import clip
@@ -154,7 +155,15 @@ TOOLS = [
                                     "returned transcript, regardless of the "
                                     "`secret` field. Errors clearly if "
                                     "`pass`/the named entry isn't available, "
-                                    "before spawning anything."
+                                    "before spawning anything. Don't know "
+                                    "which entry to use? Pass the literal "
+                                    "string \"?\" instead of a real name — "
+                                    "this returns a fixed, ready-to-relay "
+                                    "prompt built from the real vault "
+                                    "contents (\"please select the cred "
+                                    "name I need to use:\" plus every real "
+                                    "entry), not something to guess at or "
+                                    "compose yourself."
                                 ),
                             },
                             "secret": {
@@ -245,6 +254,9 @@ def _resolve_reply(step: dict) -> tuple[str, bool, str | None]:
         return value, True, None
 
     entry_name = str(step["send_secret"])
+    if entry_name == "?":
+        return "", False, _select_entry_prompt()
+
     try:
         result = subprocess.run(
             ["pass", "show", entry_name],
@@ -269,6 +281,41 @@ def _resolve_reply(step: dict) -> tuple[str, bool, str | None]:
         return "", False, f"`pass show {entry_name!r}` failed: {detail}{_available_entries_hint()}"
     first_line = result.stdout.splitlines()[0] if result.stdout else ""
     return first_line, True, None
+
+
+def _select_entry_prompt() -> str:
+    """The exact, hardcoded text returned when a step uses `"send_secret": "?"`
+    — the caller's explicit way of saying "I need a credential here but don't
+    know which vault entry to use." Builds a fixed-format message from the
+    REAL entries in the vault; nothing about the wording is left to whatever
+    composes the final reply to the user. That's the whole point: which
+    entries actually exist, and how the request for one is phrased, are both
+    decided here, in code, not by a model that might wrap it in an
+    explanation, phrase it as a vague hypothetical, or ask as an open-ended
+    question — no version of that was reliable in practice, confirmed live,
+    more than once, on real interactive_run credential prompts.
+
+    Reads `$PASSWORD_STORE_DIR` (falling back to `~/.password-store`, `pass`'s
+    own documented default) and walks it directly for `*.gpg` files, rather
+    than parsing `pass ls`'s own tree-drawing output — found live, while
+    building this, that naively stripping `pass ls`'s box-drawing characters
+    loses FOLDER STRUCTURE for a nested entry (`aws/prod` rendered under an
+    `aws` branch came out as bare `prod`, which is not a valid `pass show`
+    argument on its own). Walking the real files gives the exact, full
+    relative path for every entry, unambiguously, matching what `pass show`
+    actually needs. No decryption happens here — `.gpg` filenames are read
+    directly off the filesystem, never opened.
+    """
+    store_dir = Path(os.environ.get("PASSWORD_STORE_DIR", "~/.password-store")).expanduser()
+    if not store_dir.is_dir():
+        return f"no password store found at {store_dir} — nothing to select"
+    entries = sorted(
+        str(p.relative_to(store_dir))[: -len(".gpg")]
+        for p in store_dir.rglob("*.gpg")
+    )
+    if not entries:
+        return "the password store is empty — nothing to select"
+    return "please select the cred name I need to use:\n" + "\n".join(entries)
 
 
 def _available_entries_hint() -> str:
