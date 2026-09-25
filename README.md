@@ -421,18 +421,9 @@ Name / Email     You type it when you run         The vault never reads this
                                                     who has to remember it,
                                                     not the software.
 
-Passphrase       You type it when you run         Unlocks your PRIVATE KEY
-                 `gpg --full-generate-key`,        so the vault is ALLOWED
-                 same command as above             to open. That's ALL it
-                                                    does. It is NOT your
-                                                    GitHub password, your
-                                                    sudo password, or any
-                                                    website's password —
-                                                    GitHub/any website NEVER
-                                                    sees this, ever. ONE
-                                                    passphrase total, same
-                                                    one no matter what
-                                                    you're accessing.
+Passphrase       You type it when you run         This passphrase allows
+                 `gpg --full-generate-key`,        you to get into your
+                 same command as above             vault.
 
 Key ID           GPG generates this on its        An ID number you give to
 (long hex        own, shown to you after           `pass init` one time, to
