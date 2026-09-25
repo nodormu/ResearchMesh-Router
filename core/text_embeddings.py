@@ -54,7 +54,7 @@ TOOLS = [
                 "model": {
                     "type": "string",
                     "description": (
-                        "Optional model name to send to the embedding server "
+                        "Not required — a model name to send to the embedding server "
                         "for this call, overriding config.toml's "
                         "[embeddings].model. Most single-model private "
                         "servers ignore this field entirely."

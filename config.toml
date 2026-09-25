@@ -90,16 +90,16 @@ enabled = true
 #   name             label; becomes the tool-name prefix and the [worker: ...] tag
 #   url              the worker's Streamable HTTP endpoint
 #   description      what this machine is FOR — see the note below
-#   token_env        optional; the environment variable holding this worker's
+#   token_env        not required; the environment variable holding this worker's
 #                    bearer token. Omit for an unauthenticated worker. Never put
 #                    the token itself here; this file is committed.
-#   timeout_seconds  optional; overrides [router] timeout_seconds
-#   enabled          optional, default true — park a worker without deleting it
+#   timeout_seconds  not required; overrides [router] timeout_seconds
+#   enabled          not required, default true — park a worker without deleting it
 #
 # 2) stdio — a worker this process launches itself as a subprocess (no port):
 #   name, description, timeout_seconds, enabled  as above
 #   command          full argv as a list, e.g. ["python", "/path/mcp_server.py"]
-#   env              optional table of extra environment variables
+#   env              table of extra environment variables, if needed
 #
 # `description` is the field that makes the fleet navigable, and it is the one
 # thing you cannot skip. ResearchMesh's mcp_server.py hardcodes a single
@@ -159,7 +159,7 @@ servers = [
 #   url             your embedding server's endpoint. Required — the tool is
 #                   still declared to Claude either way, but returns an error
 #                   telling you to set this until you do.
-#   model           optional model name forwarded in the request body. Most
+#   model           model name forwarded in the request body, not required. Most
 #                   single-model private servers ignore it; leave it unset if
 #                   yours does. Overridable per call.
 #   request_format  "openai" (default) posts {"input": [...], "model": ...}
@@ -169,11 +169,11 @@ servers = [
 #                   that shape. Either way, a response of
 #                   {"embedding": [...]} or {"embeddings": [[...]]} is also
 #                   accepted regardless of which format was sent.
-#   api_key_env     optional — name of the environment variable holding a
+#   api_key_env     not required — name of the environment variable holding a
 #                   bearer token for this server, the same `token_env`
 #                   pattern an `[mcp].servers` entry uses. Never put the
 #                   token itself here; this file is committed.
-#   timeout         optional request timeout in seconds (default 30).
+#   timeout         request timeout in seconds, not required (default 30).
 #
 # Nothing above is specific to self-hosted compute — it's the same generic
 # OpenAI-compatible /v1/embeddings shape, so a paid provider works with zero
@@ -239,7 +239,7 @@ servers = [
 #                FULL 4000-token budget would extrapolate to roughly
 #                110s, so 180s leaves real headroom rather than cutting it
 #                close. Adjust freely if your hardware/model differs.
-#   api_key_env  optional — same bearer-token env-var pattern as
+#   api_key_env  not required — same bearer-token env-var pattern as
 #                [embeddings].api_key_env. Never put the token itself
 #                here; this file is committed.
 #

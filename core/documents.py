@@ -61,7 +61,7 @@ TOOLS = [
                 "reference_doc": {
                     "type": "string",
                     "description": (
-                        "Optional .docx/.odt whose styles the output should follow "
+                        "Not required — a .docx/.odt whose styles the output should follow "
                         "(markdown sources only — passed to pandoc as "
                         "--reference-doc). Use this to match house style."
                     ),

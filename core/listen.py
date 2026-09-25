@@ -89,7 +89,7 @@ TOOLS = [
                 "device": {
                     "type": "string",
                     "description": (
-                        "Optional PipeWire source name to override "
+                        "Not required — a PipeWire source name to override "
                         "[listen].device for this call."
                     ),
                 },

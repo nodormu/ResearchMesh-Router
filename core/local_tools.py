@@ -5,9 +5,9 @@ tool schemas), `handles(name)`, and `await execute(name, input)` — so adding a
 tool means writing one module and adding it here, rather than editing the chat
 loop's declaration list and its routing chain separately.
 
-Optional third-party packages are imported inside each module's `execute`, so a
-tool whose dependency is missing declares itself normally and returns an install
-hint if the model reaches for it.
+Third-party packages, where a tool needs one, are imported inside each module's
+`execute`, so a tool whose dependency is missing declares itself normally and
+returns an install hint if the model reaches for it.
 """
 
 import inspect

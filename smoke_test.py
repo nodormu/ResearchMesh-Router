@@ -96,7 +96,7 @@ class FakeWorker:
             for n in tool_names
         ]
         self._fail_listing = fail_listing
-        # Both optional and both None by default, so every EXISTING caller
+        # Neither needs to be given, both None by default, so every EXISTING caller
         # (check_dagent_and_workers, check_fanout_and_results, ...) keeps
         # getting the original fixed "ran {tool_name}" response, unchanged.
         # Set one of these to script a specific `model`-tool-style response

@@ -19,8 +19,8 @@ TEXT_EDITOR_TOOL = {
     "name": "str_replace_based_edit_tool",
 }
 # The web tools are versioned by capability, not superseded: each dated variant
-# is a superset of the last, so we track the newest. 20260318 adds an optional
-# `response_inclusion` to both (set it to "excluded" to drop dynamically-filtered
+# is a superset of the last, so we track the newest. 20260318 adds
+# `response_inclusion` to both (not required — set it to "excluded" to drop dynamically-filtered
 # result blocks from the response); web_fetch also carries `use_cache` from
 # 20260309. Both are left at their defaults ("full" / true) here.
 WEB_SEARCH_TOOL = {"type": "web_search_20260318", "name": "web_search"}

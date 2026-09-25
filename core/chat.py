@@ -995,7 +995,7 @@ class Chat:
         iterations = 0
         extra_continuations = 0
         # Set only for the two cases where the next chat() call is
-        # API-mandated, not optional: an open pause_turn, or a
+        # unconditionally required by the API: an open pause_turn, or a
         # server_tool_use left dangling by a mixed tool_use response.
         # Reset every pass so the grace budget below is never spent on an
         # ordinary continuation once the main budget runs out.

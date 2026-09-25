@@ -114,8 +114,8 @@ class CliApp:
                 # Enter uses, so this happens regardless of whether `/voice`
                 # (auto_speak) is on or off; that flag only affects whether
                 # the REPLY gets spoken, never whether dictated input gets
-                # sent. Optional `/listen <N>` overrides [listen]'s
-                # configured duration for just this one call.
+                # sent. `/listen <N>`, if `<N>` is given, overrides
+                # [listen]'s configured duration for just this one call.
                 if text.startswith("/listen"):
                     arg = text[len("/listen"):].strip()
                     tool_input = {}
@@ -243,7 +243,7 @@ class CliApp:
                     thinking = True
 
                 # `/dagent [worker] <task>` withholds the local tools for one
-                # turn, optionally pinning to a single machine.
+                # turn, and may pin to a single machine too.
                 remote_only = False
                 worker = None
                 if text.startswith("/dagent "):

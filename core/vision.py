@@ -81,7 +81,7 @@ TOOLS = [
                 "model": {
                     "type": "string",
                     "description": (
-                        "Optional model name to send to the vision server "
+                        "Not required — a model name to send to the vision server "
                         "for this call, overriding config.toml's "
                         "[vision].model."
                     ),
@@ -89,7 +89,7 @@ TOOLS = [
                 "max_tokens": {
                     "type": "integer",
                     "description": (
-                        "Optional max output tokens for this call, "
+                        "Not required — max output tokens for this call, "
                         "overriding config.toml's [vision].max_tokens "
                         "(default 4000 — GLM-4.6V-Flash is a reasoning "
                         "model and spends part of this budget on "

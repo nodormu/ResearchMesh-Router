@@ -136,9 +136,9 @@ def build_client(
         { name = "...", command = ["python", "/path/to/mcp_server.py"],
           env = { ... }, description = "..." }
       `command` is the full argv — command[0] is the executable, the rest are
-      its arguments. `env` is optional: extra environment variables to hand
-      the subprocess (merged with a safe default set — PATH, HOME, etc. — by
-      the MCP SDK itself, so you don't need to repeat those).
+      its arguments. `env` may be omitted; when given, it's extra environment
+      variables to hand the subprocess (merged with a safe default set — PATH,
+      HOME, etc. — by the MCP SDK itself, so you don't need to repeat those).
 
     `description` is consumed by worker_descriptions(), not here.
 

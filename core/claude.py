@@ -164,7 +164,7 @@ def refresh_claude_models(
     only imported lazily, right before the actual write, and only reached
     after a live scan has already succeeded — so a scan that fails (as it
     always does against CI's placeholder key) never even touches tomlkit,
-    exactly like every other optional backing in this project.
+    exactly like every other per-tool backing in this project.
     """
     config_path = config_path or _CONFIG_PATH
     fetch_fn = fetch_fn or fetch_live_models

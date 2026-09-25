@@ -6,12 +6,12 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"   # tomllib (used by main.py) is stdlib only from 3.11
-# The four the app cannot start without. Every local-tool backing is optional
-# below rather than here, and that is a real property rather than tidiness: each
-# one is imported *inside* its tool's executor, so a missing package costs you
-# that one tool and an install hint, not the app. It is also what lets CI run
-# the three gates on this list alone, with no browser download, no apt packages
-# and no display.
+# The four the app cannot start without. Every local-tool backing lives below
+# instead, in a narrower install surface than requirements.txt's flat install —
+# not tidiness, a real property: each one is imported *inside* its tool's
+# executor, so a missing package costs you that one tool and an install hint,
+# not the app. It is also what lets CI run the three gates on this list alone,
+# with no browser download, no apt packages and no display.
 dependencies = [
     "anthropic>=1,<2",
     "mcp[cli]>=2.0,<3",     # 2.0 is a breaking major — see requirements.txt
@@ -25,8 +25,8 @@ dependencies = [
 # requirements.txt" pass that only checked this array and missed the extras
 # group entirely, wrongly concluding they were absent).
 #
-# Two different INSTALL SURFACES, not "optional vs required" packages --
-# every one of these is fully required by its own tool; none of them is
+# Two different INSTALL SURFACES, not a dispensable-vs-required split of
+# packages -- every one of these is fully required by its own tool; none is
 # dispensable. `pip install -r requirements.txt` brings in everything flat,
 # in one command. This file's own minimal `dependencies` array plus the
 # `pip install .[tools]` extra is a NARROWER surface (this repo's own core
@@ -80,10 +80,6 @@ ignore = [
     # exception escape doesn't just break the turn, it poisons every later
     # request in the session with a 400 about unresolved tool_use ids.
     "BLE001",
-    # `Optional[X]` rather than `X | None`, in mcp_client.py. Cosmetic, and the
-    # file is deliberately kept close to ResearchMesh's copy so the two can be
-    # diffed when the MCP SDK next changes shape.
-    "UP045",
 ]
 
 [tool.ruff.lint.per-file-ignores]

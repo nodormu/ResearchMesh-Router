@@ -2,7 +2,7 @@ import asyncio
 import json
 import sys
 from contextlib import AsyncExitStack
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.sse import sse_client
@@ -22,11 +22,11 @@ class MCPClient:
     - sse:   connects to a remote server's SSE endpoint (`url`).
     - http:  connects to a remote server's Streamable HTTP endpoint (`url`).
 
-    For the remote transports (sse / http) pass optional `headers` for auth,
+    For the remote transports (sse / http) `headers` may be given for auth,
     e.g. {"Authorization": "Bearer <token>"} for a server using Bearer auth.
 
-    `timeout_seconds` is this fork's one addition, and it is not optional in
-    practice. Both defaults are far too short for a worker that runs a whole
+    `timeout_seconds` is this fork's one addition, and leaving it unset is not
+    a real choice in practice. Both defaults are far too short for a worker that runs a whole
     agentic loop before replying: `create_mcp_http_client` defaults to a 300s
     read timeout, and a single `delegate` call driving a GUI can run for many
     minutes — the reference Claude Code config for the same server already sets
@@ -41,14 +41,14 @@ class MCPClient:
 
     def __init__(
         self,
-        command: Optional[str] = None,
-        args: Optional[list[str]] = None,
-        env: Optional[dict] = None,
+        command: str | None = None,
+        args: list[str] | None = None,
+        env: dict | None = None,
         *,
-        url: Optional[str] = None,
+        url: str | None = None,
         transport: Transport = "stdio",
-        headers: Optional[dict[str, str]] = None,
-        timeout_seconds: Optional[float] = None,
+        headers: dict[str, str] | None = None,
+        timeout_seconds: float | None = None,
     ):
         self._command = command
         self._args = args or []
@@ -57,7 +57,7 @@ class MCPClient:
         self._transport = transport
         self._headers = headers
         self._timeout_seconds = timeout_seconds
-        self._session: Optional[ClientSession] = None
+        self._session: ClientSession | None = None
         self._exit_stack: AsyncExitStack = AsyncExitStack()
 
     async def connect(self):

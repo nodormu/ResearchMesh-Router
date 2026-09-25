@@ -208,7 +208,7 @@ avoids the ambiguity entirely.
 python main.py
 ```
 
-**Workers are optional** — `config.toml` ships with every server commented out, so a
+**Workers ship disabled** — `config.toml` ships with every server commented out, so a
 fresh clone runs on the 23 local tools alone.
 
 ### 6) Using it
@@ -350,7 +350,7 @@ Once you've added one (see [Adding workers](#adding-workers) below), `/workers` 
 ## Configuration
 
 Non-secret settings live in `config.toml`. Secrets stay in the environment — the app
-does **not** read a `.env` file. **Workers are optional** — it ships with every server
+does **not** read a `.env` file. **Workers ship disabled** — it ships with every server
 commented out, so a fresh clone runs on the 23 local tools alone.
 
 ```toml
@@ -468,7 +468,7 @@ exposing `TOOLS`/`handles()`/`execute()`, plus a line in `local_tools.py`.
 
 </details>
 
-## Recommended local tools (optional — saves tokens)
+## Recommended local tools (not required — saves tokens)
 
 None of these are dependencies — nothing here breaks without them. They're suggested
 purely so Claude reaches for a fast, purpose-built local binary via `bash` instead of

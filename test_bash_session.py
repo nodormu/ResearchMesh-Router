@@ -315,7 +315,7 @@ async def check_zsh_support(bs) -> None:
     per-call path already used.
 
     Skips cleanly (not a failure) if zsh isn't installed -- this is
-    coverage for an optional, opt-in shell choice, not a hard dependency.
+    coverage for an opt-in shell choice, not a hard dependency.
     """
     print("zsh support ([bash].shell = zsh) -- both bugs above, fixed")
 
@@ -426,7 +426,7 @@ async def check_dash_support(bs) -> None:
     nothing can run after it but before dash prints its next prompt.
 
     Skips cleanly (not a failure) if dash isn't installed -- this is
-    coverage for an optional, opt-in shell choice, not a hard dependency
+    coverage for an opt-in shell choice, not a hard dependency
     (even though dash ships by default on Ubuntu/Debian).
     """
     print("dash support ([bash].shell = dash) -- PS1-leak fix")

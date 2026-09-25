@@ -381,7 +381,7 @@ worker MCP tools**.
     command — a worker's own `model` tool owns its own live-scan/TTL
     decision entirely (see ResearchMesh's own `core/claude.py`), the same
     way the router owns that decision for its own model above. **This
-    command is optional, not required** — because a connected worker's
+    command exists for convenience, not because it's the only way** — because a connected worker's
     `model` tool is merged/namespaced into the tool list exactly like
     `delegate` is (`core/tools.py`'s existing namespacing, unmodified),
     the router's own Claude can discover and call it during an ordinary
@@ -399,7 +399,7 @@ worker MCP tools**.
     have died since, are simply absent — that is deliberate: absent and
     unreachable are the same thing from the model's point of view.
   - **`/dagent [worker] <task>`** — one turn with the local tools **withheld**,
-    optionally pinned to a single machine. The enforcement is the point: it
+    and may pin to a single machine too. The enforcement is the point: it
     filters `tools`, it does not instruct the model. A local `bash` is faster
     and more directly matched to any concrete command than a `delegate` that
     takes minutes, so an instruction is a preference and an absent schema is a

@@ -43,7 +43,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from typing import Any, Literal, Optional, Protocol
+from typing import Any, Literal, Protocol
 
 from anthropic.types import ToolResultBlockParam
 from mcp.types import CallToolResult, ImageContent, TextContent, Tool
@@ -137,7 +137,7 @@ class ToolIndex:
         self._workers[declared_name] = worker_id
         self.tool_defs.append(schema)
 
-    def resolve(self, declared_name: str) -> Optional[tuple[Worker, str]]:
+    def resolve(self, declared_name: str) -> tuple[Worker, str] | None:
         return self._owners.get(declared_name)
 
     def worker_of(self, declared_name: str) -> str:
@@ -184,8 +184,8 @@ class ToolManager:
     async def build(
         cls,
         clients: Mapping[str, Worker],
-        descriptions: Optional[Mapping[str, str]] = None,
-        reserved: Optional[set[str]] = None,
+        descriptions: Mapping[str, str] | None = None,
+        reserved: set[str] | None = None,
     ) -> ToolIndex:
         """List every worker's tools and namespace them into one flat set.
 

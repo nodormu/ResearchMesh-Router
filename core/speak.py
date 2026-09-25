@@ -68,7 +68,7 @@ TOOLS = [
                 "voice": {
                     "type": "string",
                     "description": (
-                        "Optional path to a different Piper .onnx voice "
+                        "Not required — a path to a different Piper .onnx voice "
                         "model for this call, overriding config.toml's "
                         "[speak].voice_model. Must have a matching "
                         "<path>.json sidecar file, same as the default."
