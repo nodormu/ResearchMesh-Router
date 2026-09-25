@@ -2,7 +2,7 @@
 
     python test_processes.py
 
-Covers `interactive_run`'s `send_env`/`send_file` step fields — added so a
+Covers `interactive_run`'s `send_env` step field — added so a
 password/token prompt can be answered without the real value ever having to
 be written into the tool call itself (see the module's own docstring for the
 full rationale). Spawns real `bash -c 'read -s -p ... ; echo ...'` prompts
@@ -15,7 +15,6 @@ import asyncio
 import json
 import os
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -85,36 +84,19 @@ def check_send_env_missing_var(mod) -> None:
     check("no transcript/exit_status leaked through (never spawned)", "transcript" not in r, str(r))
 
 
-def check_send_file_happy_path(mod) -> None:
-    print("send_file: real value reaches the child, never appears unredacted in transcript")
-    fd, path = tempfile.mkstemp()
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write("file-secret-4b2c\ntrailing garbage line\n")
-        r = call(mod, {
-            "command": PROMPT_CMD,
-            "steps": [{"expect": "Enter: ", "send_file": path}],
-        })
-        check("no error", "error" not in r, str(r))
-        check("child received the file's first line only", "GOT:[file-secret-4b2c]" in r.get("transcript", ""), str(r))
-        before_echo = r.get("transcript", "").split("GOT:")[0]
-        check("real value NOT in the pre-echo portion of the transcript", "file-secret-4b2c" not in before_echo, before_echo)
-    finally:
-        os.remove(path)
-
-
-def check_send_file_missing(mod) -> None:
-    print("send_file: unreadable path fails clearly, before spawning anything")
+def check_send_file_not_available(mod) -> None:
+    print("send_file does not exist as an option -- treated as an unknown "
+          "field, resolved as if only send/send_env were considered")
     r = call(mod, {
         "command": PROMPT_CMD,
-        "steps": [{"expect": "Enter: ", "send_file": "/no/such/path/at/all"}],
+        "steps": [{"expect": "Enter: ", "send_file": "/tmp/whatever"}],
     })
-    check("returns an error", "error" in r, str(r))
-    check("no transcript leaked through (never spawned)", "transcript" not in r, str(r))
+    check("no send/send_env present -> error, send_file is simply ignored", "error" in r, str(r))
+    check("error does not treat send_file as a valid source", "send_file" not in r.get("error", "") or "must include" in r.get("error", ""), str(r))
 
 
 def check_conflicting_and_missing_sources(mod) -> None:
-    print("validation: exactly one of send/send_env/send_file required")
+    print("validation: exactly one of send/send_env required")
     r = call(mod, {
         "command": PROMPT_CMD,
         "steps": [{"expect": "Enter: ", "send": "a", "send_env": "PATH"}],
@@ -125,7 +107,7 @@ def check_conflicting_and_missing_sources(mod) -> None:
         "command": PROMPT_CMD,
         "steps": [{"expect": "Enter: "}],
     })
-    check("neither send nor send_env/send_file is an error", "error" in r, str(r))
+    check("neither send nor send_env is an error", "error" in r, str(r))
 
 
 def main() -> int:
@@ -137,9 +119,7 @@ def main() -> int:
     print()
     check_send_env_missing_var(mod)
     print()
-    check_send_file_happy_path(mod)
-    print()
-    check_send_file_missing(mod)
+    check_send_file_not_available(mod)
     print()
     check_conflicting_and_missing_sources(mod)
 
