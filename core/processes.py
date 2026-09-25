@@ -204,7 +204,7 @@ _DEFAULT_TIMEOUT = 30
 # for the full interactive_run timeout). A plain module attribute, not a
 # function default, specifically so test_processes.py can shrink it instead
 # of a real test run actually waiting out the production value.
-_SEND_SECRET_TIMEOUT = 10
+_SEND_SECRET_TIMEOUT = 30
 
 # Entry names that have already been explicitly presented AND re-referenced
 # once, for the life of this process — see `_resolve_reply`'s own docstring
@@ -239,11 +239,16 @@ def _resolve_reply(step: dict) -> tuple[str, bool, str | None]:
     respects the step's own `secret` field (default `False`), matching this
     tool's existing behavior for that case unchanged.
 
-    `send_secret` shells out to `pass show <name>` with a 10-second timeout,
-    not an unbounded wait — if `pass`/`gpg` end up needing a passphrase
-    prompt (the GPG key isn't already unlocked in `gpg-agent`'s cache) there
-    is no terminal here for `pinentry` to use, so this would otherwise hang
-    for the full `interactive_run` timeout on top of whatever the REAL
+    `send_secret` shells out to `pass show <name>` with a bounded timeout
+    (`_SEND_SECRET_TIMEOUT`, 30s), not an unbounded wait — if `pass`/`gpg`
+    end up needing a passphrase prompt (the GPG key isn't already unlocked
+    in `gpg-agent`'s cache) a GUI `pinentry` popup can appear on the user's
+    own screen, independent of this call entirely, and answering it takes
+    real human time — confirmed live this can genuinely exceed 10s, which
+    is why the timeout was raised from that original value. There is
+    still no terminal *here* for `pinentry` to use if it falls back to a
+    text prompt instead of a GUI one, so this would otherwise hang for the
+    full `interactive_run` timeout on top of whatever the REAL
     command's own steps needed, indistinguishable from a genuine hang. The
     error message says so explicitly rather than just "timed out" — unlock
     the key once, manually, in a real terminal first, which caches it in
