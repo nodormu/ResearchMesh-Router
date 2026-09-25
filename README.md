@@ -374,16 +374,38 @@ If you plan to use `interactive_run` for anything password-shaped at all, set up
 `send_secret` once and use it — it's not much more work than `send_env` and it's the
 only one of the two that's genuinely secure at rest.
 
-**One-time `pass` setup:**
+**One-time `pass` setup — install first:**
 ```
 sudo apt install pass pinentry-curses
-gpg --full-generate-key
-gpg --list-secret-keys
-pass init <the-key-id-it-shows-you>
-pass insert github
 ```
 
-**SETTING UP A VAULT FROM SCRATCH AND ADDING YOUR GITHUB PASSWORD TO IT AS AN EXAMPLE**
+```
+SETUP SEQUENCE SETTING UP A VAULT FROM SCRATCH
+══════════════════════════════════════════════
+
+Step 1: gpg --full-generate-key
+  You type:   Name, Email, Passphrase
+  Purpose:    Creates your encryption key (a public/private key pair)
+
+Step 2: gpg --list-secret-keys
+  You type:   Nothing — just run it
+  Purpose:    Shows you the Key ID (long hex string) you'll need next
+
+Step 3: pass init <key-id>
+  You type:   The Key ID from step 2
+  Purpose:    Tells pass "encrypt my whole vault using this key"
+
+Step 4: pass insert <entry-name>
+  You type:   A name you choose, then the secret value to store
+  Purpose:    Encrypts and saves one password under that name
+
+Step 5: pass show <entry-name>
+  You type:   Nothing — just the entry name
+  Purpose:    Decrypts and prints that password (needs your passphrase
+              the first time; gpg-agent caches it for a while after)
+```
+
+**EXPLANATION FOR SETTING UP A VAULT FROM SCRATCH AND ADDING YOUR GITHUB PASSWORD TO IT AS AN EXAMPLE**
 ```
 Thing            Where it comes from              What it's actually for
 ─────────────────────────────────────────────────────────────────────────
