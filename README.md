@@ -365,10 +365,24 @@ Use one of these instead — the model only ever sees a *name*, never the real v
 - **`send_env`** — name of an environment variable you set yourself, in your own shell.
   No setup beyond `export SOMETHING=...`. Not fully immune to ending up in plain text
   (shell history, a startup file) — just doesn't *require* it the way a file would.
-- **`send_secret`** — name of a [`pass`](https://www.passwordstore.org/) entry. Real,
-  GPG-encrypted-at-rest storage. Needs a one-time setup (below), but is the one option
-  that's actually encrypted, not just "plain text if you're careless." Works identically
-  on a desktop or a headless server — no GUI, no D-Bus, no desktop environment required.
+- **`send_secret`** — name of a [`pass`](https://www.passwordstore.org/) entry, or the
+  literal string `"?"` if you don't know which one to use. Real, GPG-encrypted-at-rest
+  storage. Needs a one-time setup (below), but is the one option that's actually
+  encrypted, not just "plain text if you're careless." Works identically on a desktop or
+  a headless server — no GUI, no D-Bus, no desktop environment required.
+
+**Any entry name — even an obviously correct one, even the only entry that exists — is
+refused the first time it's ever referenced in a running session.** The tool responds
+with a fixed prompt built from the real vault contents instead of using it:
+```
+please select the cred name I need to use:
+<every real entry, one per line>
+```
+Only a *second* reference to that same name actually proceeds. This is enforced in the
+tool's own code, not just documented behavior — relying on the model to check this on
+its own, every time, without exception, was tried first and was not reliable enough in
+practice. `"?"` triggers the exact same prompt directly, on purpose, if you'd rather ask
+up front than have the first real attempt get refused.
 
 If you plan to use `interactive_run` for anything password-shaped at all, set up
 `send_secret` once and use it — it's not much more work than `send_env` and it's the
