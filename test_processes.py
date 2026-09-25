@@ -125,6 +125,7 @@ class _FakePassOnPath:
 if [ "$1" = "show" ]; then
     case "$2" in
         existing-entry) echo "fake-secret-value-9k2m"; exit 0 ;;
+        fresh-unconfirmed-entry) echo "fake-secret-value-9k2m"; exit 0 ;;
         sleeps-forever) sleep 999; exit 0 ;;
         *) echo "Error: $2 is not in the password store." >&2; exit 1 ;;
     esac
@@ -151,8 +152,21 @@ exit 1
         os.environ["PATH"] = self._old_path
 
 
+def confirm(mod, *names: str) -> None:
+    """Mark entry name(s) as already-confirmed, bypassing the real two-call
+    present-then-use flow for tests that are checking something OTHER than
+    that flow itself (exit-code fidelity, error surfacing, etc.) — see
+    `check_first_reference_always_forces_selection` for the dedicated test
+    of the confirmation gate itself. Without this, every other send_secret
+    test would need two throwaway calls just to get past a gate unrelated
+    to what it's actually testing.
+    """
+    mod._confirmed_secret_entries.update(names)
+
+
 def check_send_secret_happy_path(mod) -> None:
     print("send_secret: real value reaches the child, never appears unredacted in transcript")
+    confirm(mod, "existing-entry")
     with _FakePassOnPath():
         r = call(mod, {
             "command": match_cmd("fake-secret-value-9k2m"),
@@ -166,6 +180,7 @@ def check_send_secret_happy_path(mod) -> None:
 
 def check_send_secret_missing_entry(mod) -> None:
     print("send_secret: entry not in the store fails clearly, before spawning anything")
+    confirm(mod, "no-such-entry")
     with _FakePassOnPath():
         r = call(mod, {
             "command": PROMPT_CMD,
@@ -180,6 +195,7 @@ def check_send_secret_missing_entry_shows_real_available_entries(mod) -> None:
     print("send_secret: a wrong/guessed entry name's error includes the "
           "REAL list of what's actually in the vault (pass ls), so a "
           "hallucinated or mistyped name doesn't just fail blind")
+    confirm(mod, "totally-made-up-name")
     with _FakePassOnPath():
         r = call(mod, {
             "command": PROMPT_CMD,
@@ -192,6 +208,7 @@ def check_send_secret_missing_entry_shows_real_available_entries(mod) -> None:
 
 def check_send_secret_pass_not_installed(mod) -> None:
     print("send_secret: pass genuinely absent from PATH fails clearly")
+    confirm(mod, "anything")
     old_path = os.environ["PATH"]
     try:
         os.environ["PATH"] = "/nonexistent-empty-dir"
@@ -208,6 +225,7 @@ def check_send_secret_pass_not_installed(mod) -> None:
 def check_send_secret_timeout(mod) -> None:
     print("send_secret: an unanswerable prompt times out with a clear "
           "message instead of hanging for the full interactive_run timeout")
+    confirm(mod, "sleeps-forever")
     old_timeout = mod._SEND_SECRET_TIMEOUT
     mod._SEND_SECRET_TIMEOUT = 1
     try:
@@ -244,6 +262,53 @@ def check_secret_redacted_even_when_echoed_back_later(mod) -> None:
     )
     check("both occurrences (send line AND echoed-back line) show the redaction marker",
           transcript.count("***") == 2, transcript)
+
+
+def check_first_reference_always_forces_selection(mod) -> None:
+    print("send_secret: a DIRECT, CORRECT, real entry name is still refused "
+          "on its first-ever reference -- reproduces the actual live "
+          "incident (the model went straight to the only entry that "
+          "existed, on the first try, with no '?' involved at all)")
+    # _select_entry_prompt() reads $PASSWORD_STORE_DIR directly, independent
+    # of the faked `pass` binary _FakePassOnPath sets up -- give it its own
+    # controlled store so this test doesn't depend on whatever vault state
+    # happens to exist on the machine actually running it.
+    store = tempfile.mkdtemp()
+    old_dir = os.environ.get("PASSWORD_STORE_DIR")
+    try:
+        open(os.path.join(store, "fresh-unconfirmed-entry.gpg"), "w").close()
+        os.environ["PASSWORD_STORE_DIR"] = store
+
+        with _FakePassOnPath():
+            r1 = call(mod, {
+                "command": PROMPT_CMD,
+                "steps": [{"expect": "Enter: ", "send_secret": "fresh-unconfirmed-entry"}],
+            })
+        check("first reference is refused, not used, even though it's a real correct name",
+              "error" in r1, str(r1))
+        check("refusal is the exact same selection prompt \"?\" produces",
+              "please select the cred name I need to use:" in r1.get("error", ""), str(r1))
+        check("refusal names the real entry, from the real store",
+              "fresh-unconfirmed-entry" in r1.get("error", ""), str(r1))
+        check("no transcript leaked through on the refused first attempt",
+              "transcript" not in r1, str(r1))
+
+        with _FakePassOnPath():
+            r2 = call(mod, {
+                "command": match_cmd("fake-secret-value-9k2m"),
+                "steps": [{"expect": "Enter: ", "send_secret": "fresh-unconfirmed-entry"}],
+            })
+        check("SAME name, second reference, now proceeds for real",
+              "error" not in r2, str(r2))
+        check("and actually works correctly once confirmed",
+              "GOT:MATCH" in r2.get("transcript", ""), str(r2))
+    finally:
+        if old_dir is None:
+            os.environ.pop("PASSWORD_STORE_DIR", None)
+        else:
+            os.environ["PASSWORD_STORE_DIR"] = old_dir
+        import shutil
+        shutil.rmtree(store, ignore_errors=True)
 
 
 def check_send_secret_select_sentinel(mod) -> None:
@@ -334,6 +399,8 @@ def main() -> int:
     check_send_env_happy_path(mod)
     print()
     check_send_env_missing_var(mod)
+    print()
+    check_first_reference_always_forces_selection(mod)
     print()
     check_send_secret_happy_path(mod)
     print()

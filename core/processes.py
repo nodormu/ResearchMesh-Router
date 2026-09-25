@@ -206,6 +206,18 @@ _DEFAULT_TIMEOUT = 30
 # of a real test run actually waiting out the production value.
 _SEND_SECRET_TIMEOUT = 10
 
+# Entry names that have already been explicitly presented AND re-referenced
+# once, for the life of this process — see `_resolve_reply`'s own docstring
+# for the incident this closes: a real live session skipped straight to
+# `"send_secret": "sudo_admin"` on the FIRST attempt, without ever showing
+# the "please select the cred name I need to use:" prompt first, because
+# nothing forced it to — the "?" sentinel only helps if the caller chooses
+# to use it, and this one didn't, even though "sudo_admin" was the only
+# entry that existed. A module-level set, not a function default, because
+# it has to persist across separate `_run()` calls within the same running
+# process to mean anything.
+_confirmed_secret_entries: set[str] = set()
+
 
 def handles(name: str) -> bool:
     return name in _TOOL_NAMES
@@ -254,7 +266,15 @@ def _resolve_reply(step: dict) -> tuple[str, bool, str | None]:
         return value, True, None
 
     entry_name = str(step["send_secret"])
-    if entry_name == "?":
+    if entry_name == "?" or entry_name not in _confirmed_secret_entries:
+        # First reference to this exact name (or an explicit "?") — refuse
+        # to use it yet, REGARDLESS of whether it's real, correct, or the
+        # only entry that exists. Recording it here means the NEXT call
+        # that names this same entry is treated as the confirmed one — so
+        # a real task still only takes two calls total (present, then use),
+        # not a repeated prompt every single time the same entry comes up
+        # later in the same session.
+        _confirmed_secret_entries.add(entry_name)
         return "", False, _select_entry_prompt()
 
     try:
