@@ -77,3 +77,6 @@ faster-whisper           # `listen` — CPU/CTranslate2 speech-to-text
                          # point of its own. Capture itself goes through the
                          # system `parecord` binary (not pip); this package only
                          # does the transcription step.
+ruff>=0.16               # linter, `pyproject.toml`'s `[tool.ruff.lint]` tunes it for this
+                         # repo. Added by explicit user request. `ruff check .` should
+                         # come back clean; see CLAUDE.md.

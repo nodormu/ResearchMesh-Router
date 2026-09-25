@@ -17,6 +17,7 @@ dependencies = [
     "mcp[cli]>=2.0,<3",     # 2.0 is a breaking major — see requirements.txt
     "prompt-toolkit>=3.0.51",
     "pydantic>=2.0",
+    "ruff>=0.16",           # linter — added by explicit user request, see requirements.txt
 ]
 
 # `pip install -e ".[tools]"` — the same set requirements.txt installs, which is
