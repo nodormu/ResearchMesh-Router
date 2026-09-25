@@ -374,6 +374,9 @@ If you plan to use `interactive_run` for anything password-shaped at all, set up
 `send_secret` once and use it — it's not much more work than `send_env` and it's the
 only one of the two that's genuinely secure at rest.
 
+<details>
+<summary><strong>Full <code>pass</code> vault setup, walkthrough + reference charts (click to expand)</strong></summary>
+
 **One-time `pass` setup — install first:**
 ```
 sudo apt install pass pinentry-curses
@@ -482,6 +485,8 @@ BELOW IS HOW YOU BLOW THE WHOLE VAULT AWAY IF YOU WANT START OVER
 gpgconf --kill gpg-agent
 rm -rf ~/.password-store
 ```
+
+</details>
 
 ## Configuration
 
