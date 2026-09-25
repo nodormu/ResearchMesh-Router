@@ -129,6 +129,11 @@ if [ "$1" = "show" ]; then
         *) echo "Error: $2 is not in the password store." >&2; exit 1 ;;
     esac
 fi
+if [ "$1" = "ls" ]; then
+    echo "Password Store"
+    echo "existing-entry"
+    exit 0
+fi
 exit 1
 """
 
@@ -169,6 +174,20 @@ def check_send_secret_missing_entry(mod) -> None:
     check("returns an error", "error" in r, str(r))
     check("error surfaces pass's own stderr text", "not in the password store" in r.get("error", ""), str(r))
     check("no transcript/exit_status leaked through (never spawned)", "transcript" not in r, str(r))
+
+
+def check_send_secret_missing_entry_shows_real_available_entries(mod) -> None:
+    print("send_secret: a wrong/guessed entry name's error includes the "
+          "REAL list of what's actually in the vault (pass ls), so a "
+          "hallucinated or mistyped name doesn't just fail blind")
+    with _FakePassOnPath():
+        r = call(mod, {
+            "command": PROMPT_CMD,
+            "steps": [{"expect": "Enter: ", "send_secret": "totally-made-up-name"}],
+        })
+    check("returns an error", "error" in r, str(r))
+    check("error includes the real available entry name", "existing-entry" in r.get("error", ""), str(r))
+    check("error is clearly labeled as the real vault contents", "Entries actually in the vault" in r.get("error", ""), str(r))
 
 
 def check_send_secret_pass_not_installed(mod) -> None:
@@ -271,6 +290,8 @@ def main() -> int:
     check_send_secret_happy_path(mod)
     print()
     check_send_secret_missing_entry(mod)
+    print()
+    check_send_secret_missing_entry_shows_real_available_entries(mod)
     print()
     check_send_secret_pass_not_installed(mod)
     print()

@@ -266,9 +266,37 @@ def _resolve_reply(step: dict) -> tuple[str, bool, str | None]:
         )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
-        return "", False, f"`pass show {entry_name!r}` failed: {detail}"
+        return "", False, f"`pass show {entry_name!r}` failed: {detail}{_available_entries_hint()}"
     first_line = result.stdout.splitlines()[0] if result.stdout else ""
     return first_line, True, None
+
+
+def _available_entries_hint() -> str:
+    """Appended to a `send_secret` failure message: the real list of entry
+    NAMES currently in the vault (never their values — `pass ls` is a pure
+    directory listing, confirmed live it needs no passphrase and touches no
+    encrypted content at all). Exists specifically so a wrong or made-up
+    entry name doesn't just fail blind — the caller sees what's actually
+    there immediately, in the same error, rather than needing a separate
+    round trip to ask "what do you even have?" This is a safety net, not a
+    substitute for the actual rule: never pick which entry to use by
+    guessing among what's listed here — a human names the exact entry for
+    every real task, every time. Best-effort — if `pass ls` itself fails for
+    any reason, the base error above is still returned on its own.
+    """
+    try:
+        result = subprocess.run(
+            ["pass", "ls"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0 or not result.stdout.strip():
+        return ""
+    return f"\n\nEntries actually in the vault:\n{result.stdout.strip()}"
 
 
 def _redact(transcript: str, secret_values: list[str]) -> str:
