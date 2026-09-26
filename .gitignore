@@ -8,3 +8,10 @@ __pycache__
 .claude/
 node_modules/
 memories/
+
+# Machine-local convenience scripts (e.g. a worker-fleet config sanity
+# checker for this repo's own [mcp].servers list). Not part of the shipped
+# project — a fresh clone has none of the context these assume (this dev
+# box's own sibling-repo layout, or a real configured worker fleet), so
+# shipping them tracked would just be inert/confusing for anyone else.
+scripts/
