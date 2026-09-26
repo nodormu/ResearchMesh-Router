@@ -235,10 +235,11 @@ def check_namespacing_edge_cases() -> None:
     from core.tools import ToolManager
 
     # "gpu box" and "gpu.box" both sanitise to "gpu_box" — space and period
-    # are both illegal characters substituted with the same "_". (README's own
-    # "gpu box and gpu-box would collide" example does NOT actually collide —
-    # hyphen is already API-legal per _ILLEGAL's own pattern and is never
-    # substituted at all; verified live, flagged as a separate doc fix.)
+    # are both illegal characters substituted with the same "_". (config.toml
+    # once carried a "gpu box and gpu-box would collide" example that does
+    # NOT actually collide — hyphen is already API-legal per _ILLEGAL's own
+    # pattern and is never substituted at all; fixed there to match this
+    # test's own real example. README already had the correct version.)
     # Without disambiguation, one worker's tool would silently shadow the
     # other's.
     colliding = {

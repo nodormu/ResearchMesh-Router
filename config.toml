@@ -29,7 +29,7 @@ claude_models = ["claude-sonnet-5", "claude-opus-5-5", "claude-fable-5-1", "clau
 # smaller number just adds network calls to every other process start for
 # no practical benefit.
 model_scan_ttl_hours = 24
-claude_models_checked_at = "2026-09-24T21:21:22.235135+00:00"
+claude_models_checked_at = "2026-09-26T13:20:35.638527+00:00"
 
 [bash]
 # Shell the `bash` tool runs commands through (subprocess.run's `executable=`
@@ -82,7 +82,10 @@ enabled = false
 # workers all exposing `delegate` would otherwise be rejected outright with
 # `400 tools: Tool names must be unique`. Keep `name` short, and use only
 # letters, digits, `_` and `-`: anything else is substituted with `_` to satisfy
-# the API's tool-name rules, so `gpu box` and `gpu-box` would collide.
+# the API's tool-name rules, so `gpu box` and `gpu.box` would collide (not
+# `gpu-box`, which needs no substitution at all) — a collision like that gets
+# a numeric suffix rather than silently shadowing one worker's tool with the
+# other's.
 #
 # Two entry shapes:
 #
