@@ -58,6 +58,14 @@ dependencies = [
 # findings — that is the intended behaviour: you get told about the new rule,
 # and the exemptions below still hold. Triage a new finding rather than assuming
 # it is more of the same.
+[tool.ruff]
+# scripts/ is gitignored (machine-local convenience tooling assuming sibling
+# repo clones that only exist on this dev box -- see its own .gitignore entry)
+# but still a real directory `ruff check .` would otherwise see and lint. A
+# fresh clone never has this directory at all, so real CI never lints it --
+# excluding it here keeps a local run matching what CI actually checks.
+exclude = ["scripts"]
+
 [tool.ruff.lint]
 ignore = [
     # Blanket `except Exception` is the architecture, not an oversight. It is
@@ -88,6 +96,10 @@ ignore = [
 # Left at mypy's defaults: bodies of unannotated functions are not checked, so
 # this is a floor, not a straitjacket.
 [tool.mypy]
+# Same reasoning as [tool.ruff]'s own exclude above -- scripts/ is real on
+# this dev box but gitignored/never present in a fresh clone, so real CI
+# never type-checks it either.
+exclude = "^scripts/"
 # httpx2 is imported lazily inside the http transport and is legitimately absent
 # from a bare environment.
 ignore_missing_imports = true
