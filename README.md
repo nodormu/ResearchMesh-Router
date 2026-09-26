@@ -100,7 +100,7 @@ different computers, no shared state.
 
 ## Good to know
 
-- One request can fan out into many tool calls, local and worker alike (capped at 75
+- One request can fan out into many tool calls, local and worker alike (capped at 200
   per turn).
 - **A down worker and a mistyped worker name look identical to `/workers` and
   `/dagent`.** Both are simply "not there this turn" — `/workers` deliberately only
