@@ -320,7 +320,7 @@ a time. Wait for each install to fully finish and tell me whether it succeeded o
 failed before starting the next one. Don't batch them together.
 ```
 NOTE: this only installs on this machine, the router itself — repeat it separately
-on each worker if you want the same tools available there too.
+on each worker so the same tools are available there too.
 
 e) **Mouse/keyboard GUI control.**
 ```
@@ -624,12 +624,12 @@ exposing `TOOLS`/`handles()`/`execute()`, plus a line in `local_tools.py`.
 
 </details>
 
-## Recommended local tools (not required — saves tokens)
+## Recommended local tools — install on every machine (saves tokens)
 
-None of these are dependencies — nothing here breaks without them. They're suggested
-purely so Claude reaches for a fast, purpose-built local binary via `bash` instead of
-burning tokens re-implementing the same job in `python`, or reading whole files through
-the file editor just to search them. Install whichever are useful to you; skip the rest.
+The app starts without these, but Claude works faster and cheaper with them: it reaches
+for a fast, purpose-built local binary via `bash` instead of burning tokens
+re-implementing the same job in `python`, or reading whole files through the file
+editor just to search them. Install all of them on the router and on each worker.
 Everything below is `apt`/`snap`/`flatpak`, or (for Rust) the official `rustup`
 installer — commands as written are Debian/Ubuntu-specific. On another distro, the
 tool names are the same; swap in your own package manager (`dnf`, `pacman`, `zypper`,
@@ -640,7 +640,7 @@ and you'd rather review each one first.
 **This is the router's own machine only.** Each worker is a separate ResearchMesh
 install with its own `bash`, its own filesystem, its own set of these tools or lack
 thereof — installing something here doesn't make it available on `gpu-box` or
-`scraper`. Repeat whatever's useful on each worker machine directly.
+`scraper`. Repeat the same installs on each worker machine directly.
 
 ```bash
 # --- Search, text & structured data -----------------------------------------------

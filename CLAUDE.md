@@ -522,9 +522,9 @@ worker MCP tools**.
   required, needs a matching `<path>.json` sidecar), `sink` (PipeWire sink name,
   falls back to the system default if unset), and `timeout` (subprocess
   timeout for synthesis AND playback each, default 30). Entirely commented out
-  by default (this repo ships unconfigured, unlike ResearchMesh's own
-  `config.toml`, which currently carries live hardware values as an explicitly
-  flagged testing-state exception — see that repo's own inline comment). Read
+  by default (this repo ships unconfigured; ResearchMesh's own `config.toml`
+  keeps its machine's hardware values as commented-out reference lines —
+  re-check that file rather than trusting this note for its current state). Read
   fresh from disk on every call. **⚠️ Requires the PyPI package `piper-tts`,
   NOT `sudo apt install piper`** — the apt package is an unrelated GTK app for
   configuring gaming mice, same name by coincidence.
@@ -747,5 +747,6 @@ no ten-place checklist here.
 
 ## Deliberately not built
 
-- No recursion or loop protection for a worker configured to point back here —
-  open question, not yet resolved.
+- No recursion or loop protection for a worker configured to point back here.
+  Not built, and whether to build it is undecided — ask the user before
+  designing one.

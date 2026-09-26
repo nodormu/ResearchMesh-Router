@@ -7,8 +7,9 @@
 # repo does, plus the same apt packages (libreoffice, pandoc, python3-tk,
 # scrot, xvfb) and `playwright install chromium`.
 #
-# Each of those is imported *inside* its tool's `execute`, so a missing one
-# costs you that tool and an install hint, not the app.
+# Every package here is required: each backs a tool the router uses. They're
+# imported *inside* each tool's `execute`, so a missing one breaks that tool
+# (with an install hint) rather than the whole app — install them all.
 
 anthropic>=1,<2          # upgraded from 0.116.0 -> 1.8.0 (2026); no upper bound left it drifting
                          # silently past the 1.0.0 breaking-change boundary (httpx2, removed
@@ -52,7 +53,7 @@ ipykernel>=7.0           # the kernel that jupyter_client launches
 pexpect>=4.9             # `interactive_run` — commands that prompt (core/processes.py)
 ruamel.yaml>=0.18        # `config_edit` — YAML round-trip, comments preserved
 tomlkit>=0.12            # `config_edit` — TOML round-trip, comments preserved
-jsonpath-ng>=1.6         # `config_edit` — not required unless using '$.…' JSONPath queries
+jsonpath-ng>=1.6         # `config_edit` — required for its '$.…' JSONPath queries
 duckdb>=0.10             # `sql_query` — SQL over CSV/Parquet/JSON (core/data.py)
 send2trash>=1.8          # `trash` — recoverable deletes (core/files.py)
 pyautogui>=0.9.54        # `computer` — screen capture + mouse/keyboard (core/computer.py)
