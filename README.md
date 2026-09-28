@@ -128,6 +128,8 @@ different computers, no shared state.
   stdio MCP and covers what fakes can't: that the duplicate-name 400 is genuinely the
   API's behavior, that namespacing survives a real transport, and that a real model
   issues both calls in one turn.
+- **`python test_model_compat_live.py` is a fifth, outside the gates** (real API, ~9 requests): checks the
+  per-model tool-compatibility handler against Anthropic's actual error wording.
 
 <a id="setup-linux"></a>
 
@@ -251,6 +253,11 @@ existing cached list is used as-is. **This affects only the router's own reasoni
 model** — the one it uses to decide what to do and which tools to call. It has no effect
 on which model a connected worker (e.g. a ResearchMesh instance) uses internally; that is
 each worker's own `config.toml`, entirely separate.
+
+**Haiku 4.5 has no `computer` tool.** It rejects it, so the client drops the tool for Haiku after one rejected
+request (a `[model compat]` line is printed) and every other tool keeps working. Sonnet, Opus and Fable use
+`computer` normally. If `computer` was used in a conversation on one of those, `/model swap` to Haiku fails
+every turn with a 400 (`toolset_name 'computer' ... no toolset entry is declared`): swap back, or `/clear`.
 
 **`/model <worker>`** reaches into a CONNECTED worker and lists *its* models instead —
 e.g. `/model gpu-box` — sourced from that worker's own `model` MCP tool (delegate's
@@ -607,6 +614,7 @@ mcp_client.py     MCP client (stdio / SSE / Streamable HTTP)
 config.toml       the fleet, and router behaviour
 smoke_test.py     the offline gate
 e2e_test.py       live check against real workers (costs tokens, not a gate)
+test_model_compat_live.py  live check of the per-model tool handler (costs tokens, not a gate)
 core/
   chat.py         the agentic loop, routing prompt, /dagent
   claude.py       Anthropic SDK wrapper

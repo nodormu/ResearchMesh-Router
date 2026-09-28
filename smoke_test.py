@@ -19,6 +19,8 @@ this repo is a different set of things from ResearchMesh:
      report can tell the two *persistent* 400s apart — an unanswered tool_use
      block and a conversation past the context window both leave every later
      turn failing identically, and they need different fixes
+  9. the per-model tool-compatibility handler, the computer toolset round trip
+     and `cursor_position`, and the web tools' `allowed_callers`, on a fake API
 
 (2) is the whole reason this repo exists. Two ResearchMesh workers both expose a
 tool called `delegate`, and sending both to the API is a hard failure:
@@ -38,6 +40,7 @@ box with no workers configured and no ANTHROPIC_API_KEY set.
 """
 
 import asyncio
+import os
 import re
 import subprocess
 import sys
@@ -1629,6 +1632,504 @@ def check_model_worker_dispatch() -> None:
     )
 
 
+def check_model_compat_handler() -> None:
+    """Real `Claude.chat()` retry/filter logic against a fake API (only the network call is faked).
+
+    The fake rejects any request declaring a tool type the model can't use, naming the types, like the
+    real API. Anthropic rewording that error is only caught by test_model_compat_live.py.
+    """
+    print("model compat handler (Claude.chat unsupported-tool-type retry)")
+    import contextlib
+    import io
+
+    import httpx2
+    from anthropic import BadRequestError
+
+    import core.claude as claude_mod
+    from core.claude import Claude
+
+    TOOLSET = "computer_toolset_20260801"
+
+    def bad_request(message: str) -> BadRequestError:
+        req = httpx2.Request("POST", "https://example.invalid/v1/messages")
+        resp = httpx2.Response(400, request=req)
+        body = {
+            "type": "error",
+            "error": {"type": "invalid_request_error", "message": message},
+        }
+        return BadRequestError(message, response=resp, body=body)
+
+    class FakeAPI:
+        """`unsupported`: model -> rejected tool types. `report` picks which of them the error names
+        (default all); `always` fails every request with a fixed message.
+        """
+
+        def __init__(self, unsupported=None, report=None, always=None) -> None:
+            self.unsupported = unsupported or {}
+            self.report = report
+            self.always = always
+            self.calls: list[tuple[str, list[str]]] = []
+            self.beta = self
+            self.messages = self
+
+        def create(self, **params):
+            tools = params.get("tools") or []
+            sent = [t.get("type") or t.get("name") for t in tools]
+            self.calls.append((params["model"], sent))
+            if self.always is not None:
+                raise bad_request(self.always)
+            bad = [
+                t.get("type")
+                for t in tools
+                if t.get("type") in self.unsupported.get(params["model"], set())
+            ]
+            if bad:
+                named = self.report(bad) if self.report else bad
+                raise bad_request(
+                    f"{params['model']} does not support tool types: "
+                    f"{', '.join(named)}. Did you mean one of: bash_20250124?"
+                )
+            return "RESPONSE"
+
+    saved_key = os.environ.get("ANTHROPIC_API_KEY")
+    os.environ["ANTHROPIC_API_KEY"] = "placeholder-not-used-no-request-is-sent"
+    try:
+        custom = {
+            "name": "trash",
+            "description": "d",
+            "input_schema": {"type": "object", "properties": {}},
+        }
+        bash_t = {"type": "bash_20250124", "name": "bash"}
+        computer_t = {"type": TOOLSET}
+
+        def make(api: FakeAPI, model: str) -> Claude:
+            c = Claude(model)
+            c.client = api  # type: ignore[assignment]
+            return c
+
+        # --- A: discovery, proactive filter, per-model isolation
+        tools: list[dict] = [custom, bash_t, computer_t]
+        api = FakeAPI(unsupported={"haiku-x": {TOOLSET}})
+        cl = make(api, "haiku-x")
+        buf = io.StringIO()
+        r1, err1 = None, None
+        with contextlib.redirect_stdout(buf):
+            try:
+                r1 = cl.chat([], tools=tools)
+            except Exception as e:
+                err1 = e
+        check("first turn on a bad model returns a response", r1 == "RESPONSE", repr(err1))
+        check(
+            "first turn: exactly one failed request, then one retry",
+            len(api.calls) == 2,
+            str(api.calls),
+        )
+        check(
+            "first request carried the incompatible toolset",
+            TOOLSET in api.calls[0][1],
+        )
+        check(
+            "retry dropped the incompatible toolset",
+            TOOLSET not in api.calls[1][1],
+        )
+        check(
+            "retry kept every compatible tool",
+            api.calls[1][1] == ["trash", "bash_20250124"],
+            str(api.calls[1][1]),
+        )
+        check(
+            "unsupported types are remembered per model",
+            cl._unsupported_by_model == {"haiku-x": {TOOLSET}},
+            str(cl._unsupported_by_model),
+        )
+        check(
+            "the caller's own tool list was not mutated",
+            tools == [custom, bash_t, computer_t],
+        )
+        check(
+            "a [model compat] note is printed on discovery",
+            buf.getvalue().count("[model compat]") == 1,
+            repr(buf.getvalue()),
+        )
+
+        before = len(api.calls)
+        buf2 = io.StringIO()
+        with contextlib.redirect_stdout(buf2):
+            cl.chat([], tools=tools)
+        check(
+            "second turn on the same model needs no retry",
+            len(api.calls) - before == 1,
+            str(api.calls[before:]),
+        )
+        check(
+            "second turn filtered proactively (toolset never sent)",
+            TOOLSET not in api.calls[before][1],
+        )
+        check("no repeat note once the model is known", "[model compat]" not in buf2.getvalue())
+        check(
+            "the caller's tool list is intact after a proactive-filter turn",
+            tools == [custom, bash_t, computer_t],
+            str([t.get("type") or t.get("name") for t in tools]),
+        )
+
+        before = len(api.calls)
+        cl.model = "opus-x"
+        cl.chat([], tools=tools)
+        check(
+            "swapping to a supporting model needs no retry",
+            len(api.calls) - before == 1,
+            str(api.calls[before:]),
+        )
+        check(
+            "a supporting model still receives the toolset",
+            TOOLSET in api.calls[before][1],
+            str(api.calls[before][1]),
+        )
+
+        before = len(api.calls)
+        cl.model = "haiku-x"
+        cl.chat([], tools=tools)
+        check(
+            "swapping back to the bad model is still filtered, not rediscovered",
+            len(api.calls) - before == 1 and TOOLSET not in api.calls[before][1],
+            str(api.calls[before:]),
+        )
+
+        # --- B: a 400 that isn't the unsupported-tool wording passes through
+        api_b = FakeAPI(always="prompt is too long: 1200000 tokens > 1000000")
+        cl_b = make(api_b, "haiku-x")
+        raised_b = None
+        try:
+            cl_b.chat([], tools=[custom, computer_t])
+        except Exception as e:
+            raised_b = e
+        check(
+            "an unrelated 400 is re-raised as the original BadRequestError",
+            isinstance(raised_b, BadRequestError),
+            repr(raised_b),
+        )
+        check("an unrelated 400 is not retried", len(api_b.calls) == 1, str(len(api_b.calls)))
+        check("an unrelated 400 records nothing", cl_b._unsupported_by_model == {})
+
+        # --- C: error names a type this request never carried -> no loop
+        api_c = FakeAPI(always="x does not support tool types: some_other_20990101.")
+        cl_c = make(api_c, "haiku-x")
+        raised_c = None
+        try:
+            cl_c.chat([], tools=[custom, computer_t])
+        except Exception as e:
+            raised_c = e
+        check(
+            "an error naming an absent type is re-raised as the original BadRequestError",
+            isinstance(raised_c, BadRequestError),
+            repr(raised_c),
+        )
+        check(
+            "an error naming an absent type is not retried",
+            len(api_c.calls) == 1,
+            str(len(api_c.calls)),
+        )
+
+        # --- D: several offending types in one message are all stripped at once
+        two = {"type": "other_toolset_20260801"}
+        api_d = FakeAPI(unsupported={"haiku-x": {TOOLSET, "other_toolset_20260801"}})
+        cl_d = make(api_d, "haiku-x")
+        with contextlib.redirect_stdout(io.StringIO()):
+            cl_d.chat([], tools=[custom, computer_t, two])
+        check(
+            "a message naming two types needs only one retry",
+            len(api_d.calls) == 2,
+            str(api_d.calls),
+        )
+        check(
+            "both named types are remembered",
+            cl_d._unsupported_by_model.get("haiku-x") == {TOOLSET, "other_toolset_20260801"},
+            str(cl_d._unsupported_by_model),
+        )
+
+        # --- E: an API that names one bad type per error can't spin forever
+        many = [{"type": f"t{i}_20990101"} for i in range(claude_mod._MAX_UNSUPPORTED_TOOL_RETRIES + 3)]
+        api_e = FakeAPI(
+            unsupported={"haiku-x": {t["type"] for t in many}},
+            report=lambda bad: bad[:1],
+        )
+        cl_e = make(api_e, "haiku-x")
+        raised_e = None
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                cl_e.chat([], tools=many)
+            except Exception as e:
+                raised_e = e
+        check(
+            "one-type-at-a-time errors end in a raise, not a hang",
+            isinstance(raised_e, BadRequestError),
+            repr(raised_e),
+        )
+        check(
+            "the retry loop stops at its own cap",
+            len(api_e.calls) == claude_mod._MAX_UNSUPPORTED_TOOL_RETRIES,
+            f"{len(api_e.calls)} vs cap {claude_mod._MAX_UNSUPPORTED_TOOL_RETRIES}",
+        )
+
+        # --- F: no tools at all is untouched
+        api_f = FakeAPI(unsupported={"haiku-x": {TOOLSET}})
+        cl_f = make(api_f, "haiku-x")
+        cl_f.chat([])
+        check(
+            "a request with no tools makes one plain call",
+            len(api_f.calls) == 1 and api_f.calls[0][1] == [],
+            str(api_f.calls),
+        )
+    finally:
+        if saved_key is None:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+        else:
+            os.environ["ANTHROPIC_API_KEY"] = saved_key
+
+
+def check_toolset_name_echo() -> None:
+    """`Chat._run_tool_uses` echoes a toolset member's `toolset_name` onto its `tool_result` (success and
+    error paths) and adds nothing for ordinary tools. Uses the SDK's real `BetaToolUseBlock`.
+    """
+    print("run loop: toolset_name echo onto tool_result")
+    from anthropic.types.beta import BetaToolUseBlock
+
+    import core.chat as chat_mod
+    from core.chat import Chat
+    from core.tools import ToolIndex
+
+    check(
+        "SDK's BetaToolUseBlock declares toolset_name",
+        "toolset_name" in BetaToolUseBlock.model_fields,
+    )
+
+    def block(id, name, toolset=None):
+        kw = {"toolset_name": toolset} if toolset is not None else {}
+        return BetaToolUseBlock(id=id, name=name, input={}, type="tool_use", **kw)
+
+    class Msg:
+        def __init__(self, blocks):
+            self.content = blocks
+
+    async def ok_execute(name, input):
+        return "ok"
+
+    async def raising_execute(name, input):
+        raise RuntimeError("boom")
+
+    chat = Chat(claude_service=object(), clients={})  # type: ignore[arg-type]
+    orig_execute = chat_mod.local_tools.execute
+    try:
+        chat_mod.local_tools.execute = ok_execute
+        res = asyncio.run(
+            chat._run_tool_uses(
+                Msg([block("t_plain", "bash"), block("t_comp", "left_click", "computer")]),
+                ToolIndex(),
+            )
+        )
+        by_id = {r["tool_use_id"]: r for r in res}
+        check("success: one result per block", len(res) == 2, str(res))
+        check("success: results keep block order", [r["tool_use_id"] for r in res] == ["t_plain", "t_comp"])
+        check(
+            "success: a toolset member's result echoes toolset_name",
+            by_id["t_comp"].get("toolset_name") == "computer",
+            str(by_id["t_comp"]),
+        )
+        check(
+            "success: an ordinary tool's result has no toolset_name key",
+            "toolset_name" not in by_id["t_plain"],
+            str(by_id["t_plain"]),
+        )
+
+        chat_mod.local_tools.execute = raising_execute
+        res = asyncio.run(
+            chat._run_tool_uses(
+                Msg([block("e_plain", "bash"), block("e_comp", "left_click", "computer")]),
+                ToolIndex(),
+            )
+        )
+        by_id = {r["tool_use_id"]: r for r in res}
+        check(
+            "error: both blocks still get a result",
+            set(by_id) == {"e_plain", "e_comp"},
+            str(res),
+        )
+        check(
+            "error: a toolset member's error result echoes toolset_name",
+            by_id["e_comp"].get("toolset_name") == "computer" and by_id["e_comp"].get("is_error") is True,
+            str(by_id["e_comp"]),
+        )
+        check(
+            "error: an ordinary tool's error result has no toolset_name key",
+            "toolset_name" not in by_id["e_plain"] and by_id["e_plain"].get("is_error") is True,
+            str(by_id["e_plain"]),
+        )
+    finally:
+        chat_mod.local_tools.execute = orig_execute
+
+
+def check_toolset_and_schema_wiring() -> None:
+    """Web tools declare `allowed_callers: ["direct"]` (read from `local_tools.TOOLS`, the list sent), and
+    each computer-toolset member routes to exactly one module.
+    """
+    print("toolset routing + web-tool schemas")
+    from core import computer, local_tools
+
+    web = [
+        t
+        for t in local_tools.TOOLS
+        if str(t.get("type", "")).startswith(("web_search_", "web_fetch_"))
+    ]
+    check(
+        "web_search and web_fetch are both in the declared registry",
+        sorted(t.get("name") for t in web) == ["web_fetch", "web_search"],
+        str([t.get("name") for t in web]),
+    )
+    for t in web:
+        check(
+            f"{t.get('name')}: allowed_callers is exactly ['direct']",
+            t.get("allowed_callers") == ["direct"],
+            str(t),
+        )
+
+    check("computer toolset declares members", bool(computer._MEMBERS))
+    for member in sorted(computer._MEMBERS):
+        owners = [m.__name__ for m in local_tools.MODULES if m.handles(member)]
+        check(
+            f"member {member!r} routes to exactly one module",
+            owners == ["core.computer"],
+            str(owners),
+        )
+    check(
+        "the retired single-tool name 'computer' routes nowhere",
+        not any(m.handles("computer") for m in local_tools.MODULES),
+    )
+    # Match the guard's own wording: without it execute() still returns an "Error: ..." (no DISPLAY).
+    result = asyncio.run(computer.execute("not_a_member", {}))
+    check(
+        "execute() refuses a name outside the toolset",
+        isinstance(result, str) and "is not a computer-toolset member" in result,
+        repr(result),
+    )
+
+    # CLAUDE.md states the member count; a missing sentence fails too.
+    claimed = re.search(
+        r"expands into (\d+) member tools", (ROOT / "CLAUDE.md").read_text()
+    )
+    check(
+        "CLAUDE.md states the toolset's member count",
+        claimed is not None,
+        "sentence 'expands into N member tools' not found",
+    )
+    if claimed:
+        check(
+            "CLAUDE.md's member count matches computer._MEMBERS",
+            int(claimed.group(1)) == len(computer._MEMBERS),
+            f"doc says {claimed.group(1)}, code has {len(computer._MEMBERS)}",
+        )
+
+
+def _stub_pyautogui(native_size, position):
+    from unittest.mock import MagicMock
+
+    stub = MagicMock()
+    stub.size.return_value = native_size
+    stub.position.return_value = position
+    return stub
+
+
+def check_computer_dispatch_covers_members() -> None:
+    """Every declared toolset member reaches real handling in `_dispatch`, not the "unsupported action"
+    fallthrough (a raise counts as handled). pyautogui is a stub.
+    """
+    print("computer toolset: every member is dispatched")
+    from core import computer
+
+    for member in sorted(computer._MEMBERS):
+        try:
+            out = computer._dispatch(
+                _stub_pyautogui((2560, 1600), (1280, 800)),
+                member,
+                {"duration": 0, "coordinate": [1, 1], "text": "a", "region": [0, 0, 5, 5]},
+            )
+        except Exception:
+            out = "reached member logic"
+        check(
+            f"member {member!r} is handled by _dispatch",
+            out != f"Error: unsupported action {member!r}",
+            str(out),
+        )
+
+
+def check_cursor_position() -> None:
+    """`cursor_position` answers `X=<n>, Y=<n>` in declared screenshot space, with no follow-up screenshot."""
+    print("computer toolset: cursor_position")
+    import re
+
+    from core import computer
+
+    dw, dh = computer.DISPLAY_WIDTH, computer.DISPLAY_HEIGHT
+
+    # Hand-checkable: a native screen twice the declared size, cursor dead centre.
+    stub = _stub_pyautogui((2 * dw, 2 * dh), (dw, dh))
+    out = computer._dispatch(stub, "cursor_position", {})
+    check(
+        "a cursor at the centre of a 2x screen reports the declared-space centre",
+        out == f"X={round(dw / 2)}, Y={round(dh / 2)}",
+        repr(out),
+    )
+    check(
+        "the answer is the plain text form 'X=<int>, Y=<int>'",
+        isinstance(out, str) and re.fullmatch(r"X=\d+, Y=\d+", out) is not None,
+        repr(out),
+    )
+
+    # Round trip through the existing inverse: declared -> native -> declared.
+    native = (1920, 1080)
+    exact = True
+    detail = ""
+    for pt in [(0, 0), (1, 1), (dw // 3, dh // 4), (dw - 1, dh - 1)]:
+        nx, ny = computer._to_native(_stub_pyautogui(native, None), list(pt))
+        back = computer._dispatch(_stub_pyautogui(native, (nx, ny)), "cursor_position", {})
+        if back != f"X={pt[0]}, Y={pt[1]}":
+            exact = False
+            detail = f"{pt} -> native {(nx, ny)} -> {back!r}"
+            break
+    check("a declared point survives the native round trip unchanged", exact, detail)
+
+    # A position outside the screen is clamped into the declared box.
+    far = computer._dispatch(_stub_pyautogui((dw, dh), (dw * 5, dh * 5)), "cursor_position", {})
+    check(
+        "an out-of-range position is clamped to the declared box",
+        far == f"X={dw - 1}, Y={dh - 1}",
+        repr(far),
+    )
+
+    # Through the real _run(): text only, and no screenshot attempted.
+    shot_stub = _stub_pyautogui((2 * dw, 2 * dh), (dw, dh))
+    orig_guard = computer._guard
+    saved_mod = sys.modules.get("pyautogui")
+    computer._guard = lambda: None
+    sys.modules["pyautogui"] = shot_stub
+    try:
+        via_run = computer._run("cursor_position", {})
+    finally:
+        computer._guard = orig_guard
+        if saved_mod is None:
+            sys.modules.pop("pyautogui", None)
+        else:
+            sys.modules["pyautogui"] = saved_mod
+    check(
+        "_run returns exactly the text line",
+        via_run == f"X={round(dw / 2)}, Y={round(dh / 2)}",
+        repr(via_run),
+    )
+    check(
+        "_run attempted no screenshot for a pure read",
+        not shot_stub.screenshot.called,
+    )
+
+
 def main() -> int:
     sys.path.insert(0, str(ROOT))
     for step in (
@@ -1646,6 +2147,11 @@ def main() -> int:
         check_model_command,
         check_model_refresh,
         check_model_worker_dispatch,
+        check_model_compat_handler,
+        check_toolset_name_echo,
+        check_toolset_and_schema_wiring,
+        check_computer_dispatch_covers_members,
+        check_cursor_position,
     ):
         step()
         print()

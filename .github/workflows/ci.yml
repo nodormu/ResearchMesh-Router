@@ -1,7 +1,8 @@
 name: CI
 
-# The three gates from CLAUDE.md, on every push and PR. `e2e_test.py` is
-# deliberately absent: it spends real Anthropic tokens and needs an API key.
+# The three gates from CLAUDE.md, on every push and PR, plus `behaviour` (the
+# shell/pty test scripts). `e2e_test.py` and `test_model_compat_live.py` are
+# absent on purpose: they spend real Anthropic tokens and need an API key.
 on:
   push:
     branches: [main]
@@ -63,6 +64,50 @@ jobs:
 
       - name: smoke test
         run: python smoke_test.py
+
+  # Shell/pty test scripts. They need `pexpect`, so this is a separate job: `gates`
+  # installs only the four core packages so smoke_test.py keeps proving the app
+  # starts on a bare box. No network, API key, display or hardware is used.
+  behaviour:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install pexpect, zsh and less
+        # test_bash_session.py needs zsh (its zsh checks skip without it), `less`, and a
+        # ~/.zshrc (even empty): with none, zsh runs its first-run wizard and bash_session's
+        # spawn times out.
+        run: |
+          python -m pip install --upgrade pip
+          pip install pexpect
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zsh less
+          touch ~/.zshrc
+
+      # One step per script so a failure doesn't hide the rest.
+      - name: test_bash_session.py
+        run: python test_bash_session.py
+
+      - name: test_listen.py
+        if: ${{ !cancelled() }}
+        run: python test_listen.py
+
+      - name: test_process_reaper.py
+        if: ${{ !cancelled() }}
+        run: python test_process_reaper.py
+
+      - name: test_processes.py
+        if: ${{ !cancelled() }}
+        run: python test_processes.py
 
   # Non-blocking: requirements.txt lists every local-tool backing, and this is
   # the only thing that would notice one of them becoming uninstallable. Kept

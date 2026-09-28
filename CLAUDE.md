@@ -54,8 +54,8 @@ tells you where to be careful.
 | `mcp_client.py` | copied, plus `timeout_seconds` |
 | `core/browser.py`, `config_edit.py`, `data.py`, `documents.py`, `files.py`, `kernel.py`, `listen.py`, `memory.py`, `processes.py`, `speak.py`, `output.py`, `text_embeddings.py`, `vision.py` | copied verbatim in the tool merge, unchanged |
 | `core/bash_session.py`, `process_reaper.py` | ported from ResearchMesh after the tool merge (bash_session added there first, process_reaper alongside it), copied verbatim, kept in the same byte-identical set as the row above |
-| `core/computer.py` | copied verbatim in the tool merge; since diverged here first — migrated from `computer_20251124` to `computer_toolset_20260801` ahead of ResearchMesh's own copy, see the "byte-identical copies" note just below this table for why and what restores parity |
-| `core/claude_learned_schemas.py` | copied verbatim in the tool merge; since diverged here too — `web_search`/`web_fetch` now declare `allowed_callers: ["direct"]` explicitly, a Haiku-compatibility fix (see `core/claude.py`'s Architecture bullet above), same "diverged here first, port back to restore parity" situation as `computer.py` |
+| `core/computer.py` | copied verbatim in the tool merge; migrated here first to `computer_toolset_20260801` (a client toolset that expands into 17 member tools), with `cursor_position` added here first too; both ported to ResearchMesh, so it is byte-identical again |
+| `core/claude_learned_schemas.py` | copied verbatim in the tool merge; `web_search`/`web_fetch` gained `allowed_callers: ["direct"]` here first (Haiku fix, see the `core/claude.py` bullet), ported to ResearchMesh, byte-identical again |
 | `main.py`, `core/chat.py` | same skeleton; local-tool wiring restored, `SYSTEM_PROMPT` rewritten |
 | `core/claude.py` | same skeleton; still posts to the beta endpoint (originally restored because `computer_20251124` needed it — that need is gone now that `computer.py` uses `computer_toolset_20260801`, but the beta endpoint stayed since it costs nothing to keep, see its Architecture bullet below) |
 | `core/tools.py` | rebuilt for this project; only the result-formatting helpers survive |
@@ -63,41 +63,19 @@ tells you where to be careful.
 
 The tool modules are meant to be byte-identical copies of ResearchMesh's own.
 Keep them that way — a fix in either repo should be a straight `cp`. `diff -rq
---exclude=__pycache__ ../ResearchMesh/core core` currently reports seven
-differing files (`chat.py`, `claude.py`, `claude_learned_schemas.py`,
-`cli.py`, `computer.py`, `local_tools.py`, `tools.py`) plus one file only on
-the ResearchMesh side (`midi1.py` — this repo has no MIDI tool); every other
-tool module matches byte for byte, and anything else appearing in that list is
-drift worth explaining.
+--exclude=__pycache__ ../ResearchMesh/core core` currently reports five
+differing files (`chat.py`, `claude.py`, `cli.py`, `local_tools.py`, `tools.py`)
+plus one file only on the ResearchMesh side (`midi1.py` — this repo has no MIDI
+tool); every other tool module matches byte for byte, and anything else
+appearing in that list is drift worth explaining.
 **`cli.py` is expected to differ, not a regression** — see its own Architecture
 bullet below for exactly what it carries beyond ResearchMesh's copy
 (`/workers`/`/dagent`, genuinely router-specific; `/voice`/`/listen`, ported
 over and behaviorally identical to ResearchMesh's own). **`local_tools.py` is
 expected to differ too** — its `MODULES` list correctly has no `midi1` entry,
-since this repo carries no MIDI tool. **`computer.py` differs for a different
-reason than the other five, and NOT permanently by design**: it was migrated
-here first, ahead of ResearchMesh's own copy, from the old single-tool
-`computer_20251124` schema to the newer `computer_toolset_20260801` client
-toolset (fixes Opus 5.5, which rejects `computer_20251124` outright — see
-`researchmesh_client_dev_log.md` in ResearchMesh's own `/memories` for the full
-compatibility matrix and reasoning). Router was chosen as the test bed
-deliberately, precisely so this could be verified against the real API without
-touching the canonical repo first. **Porting the same migration to
-ResearchMesh's own `core/computer.py` (plus the matching `local_tools.py`/
-`chat.py`/`smoke_test.py` fixes for a toolset entry's missing `name` field) is
-the expected next step to restore byte-identity** — until that happens,
-`computer.py` belongs in this diff list as a real, known, temporary divergence,
-not a mistake. **`claude_learned_schemas.py` diverged the same way, same
-session**: `web_search`/`web_fetch` now declare `allowed_callers: ["direct"]`,
-fixing a real Haiku-only failure ("does not support programmatic tool
-calling") with a root-cause schema correction rather than a runtime
-workaround — see `core/claude.py`'s Architecture bullet above for the full
-reasoning and the separate, complementary runtime handler this same
-investigation added for the ONE remaining Haiku incompatibility that has no
-schema-level fix (the computer tool itself). Porting this one-line change back
-to ResearchMesh's own copy is equally expected and equally not yet done.
-Re-run the `diff` above rather than trusting this file count if the tool set
-or either migration's status on either side ever changes.
+since this repo carries no MIDI tool. `computer.py` and `claude_learned_schemas.py` were fixed here first and
+ported to ResearchMesh; both are byte-identical again. Re-run the `diff` above rather than trusting this file
+count if the tool set ever changes.
 
 **One thing to know for the next MCP SDK major.** `mcp_client.py` and
 `core/tools.py` are the two files that broke on mcp 1.x → 2.x: the transport
@@ -178,6 +156,11 @@ headers — actually issues both calls in one turn. That last one is the subtle
 one: plumbing that fans out perfectly but which the model never triggers would
 pass every check in `smoke_test.py`. Run it after touching `core/tools.py`,
 `mcp_client.py`, or `SYSTEM_PROMPT`.
+
+`python test_model_compat_live.py` is a fifth check outside the gates (real API, ~9 requests, exits 2 without
+a key). It sends the full local tool list to every model in `config.toml` through the real `Claude.chat()`,
+checking the per-model tool-compatibility handler against Anthropic's actual error wording. Run it after
+touching `core/claude.py` or the tool list, or when adding a model.
 
 ## Why this repo exists
 
@@ -325,7 +308,7 @@ worker MCP tools**.
   Not every Anthropic-defined tool type works on every model — confirmed
   live: Haiku 4.5 flatly rejects `computer_toolset_20260801` (a genuine model
   limitation, not a schema bug — it can't use the older `computer_20251124`
-  either, so there is no computer-tool version it supports at all). The API
+  either; `computer_20250124` is accepted on Haiku 4.5 but deliberately not declared, see the Haiku bullet below). The API
   fails the WHOLE request over one incompatible tool, so `/model swap` to
   Haiku would otherwise 400 on every single turn, including ones that never
   touch the offending tool — this is exactly the failure mode a user hit
@@ -345,6 +328,20 @@ worker MCP tools**.
   "does not support programmatic tool calling" — for a different reason:
   Haiku can't be a `code_execution` caller, which this project never uses
   anyway) with a real root-cause schema fix rather than a runtime workaround.
+
+- **Haiku 4.5 has no computer tool (known limitation, left as is).** Haiku rejects `computer_toolset_20260801`;
+  the compat handler above drops it after the first rejected request per model per process, and every other
+  tool keeps working. `computer_20250124` (beta header `computer-use-2025-01-24`) is accepted on Haiku but not
+  declared: it needs a per-request beta header and a second executor path (`name: "computer"` +
+  `input.action`; `computer.handles("computer")` is False on purpose, asserted in the smoke test), and
+  declaring both computer tools in one request is a hard 400 on every model. `/model swap` to Haiku after the
+  computer tool was used on another model in the same conversation fails every turn with a 400 (`toolset_name
+  'computer' ... is not the family of a declared toolset entry`); swap back or `/clear`. Sketched, not built:
+  send a per-request copy of the history with toolset `tool_use` blocks rewritten to `{"name": "computer",
+  "input": {"action": <member>, ...}}` and `toolset_name` dropped from `tool_result`s when the toolset is
+  absent from the outgoing tools.
+  `/dagent` sends no local tools, so the same rule applies there after computer use (checked at the API level,
+  not through `/dagent`).
 
 - **`mcp_client.py`** — kept close to the copy it came from, deliberately, so
   the two remain easy to compare by eye when the MCP SDK next changes shape.

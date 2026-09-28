@@ -33,7 +33,7 @@ from core import claude_learned_schemas as learned
 MODULES = [
     learned,     # bash, text editor, web_search, web_fetch
     memory,      # cross-session memory (learned schema)
-    computer,    # screen/mouse/keyboard control (learned schema, beta-gated)
+    computer,    # screen/mouse/keyboard control (client toolset, no beta header)
     browser,     # Playwright DOM surfing
     documents,   # LibreOffice / pandoc conversion
     kernel,      # stateful IPython

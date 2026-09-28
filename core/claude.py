@@ -276,7 +276,7 @@ class Claude:
     tool type works on every model — confirmed live: Claude Haiku 4.5 flatly
     rejects `computer_toolset_20260801` (a real, permanent model limitation,
     not a schema bug — Haiku doesn't support the older `computer_20251124`
-    either, so there is no version of the computer tool it can use at all).
+    either; `computer_20250124` is accepted but deliberately not declared).
     Declaring an unsupported tool type fails the WHOLE request, not just the
     incompatible tool, so a `/model swap` to an incompatible model would
     otherwise 400 on every single turn until swapped back — including turns

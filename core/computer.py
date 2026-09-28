@@ -130,7 +130,8 @@ _KEY_ALIASES = {
 # Actions that never get a follow-up screenshot appended: `wait` changes nothing
 # worth re-capturing, and screenshot/zoom already *are* the capture — appending
 # to them would double the image on success and double the error on failure.
-_NO_SCREENSHOT = {"wait", "screenshot", "zoom"}
+# `cursor_position` is a text-only read.
+_NO_SCREENSHOT = {"wait", "screenshot", "zoom", "cursor_position"}
 
 
 def handles(name: str) -> bool:
@@ -217,6 +218,10 @@ def _dispatch(pyautogui, action: str, ti: dict):
         duration = min(float(ti.get("duration", 1)), 30.0)
         time.sleep(duration)
         return f"Waited {duration}s."
+
+    if action == "cursor_position":
+        x, y = _to_declared(pyautogui, pyautogui.position())
+        return f"X={x}, Y={y}"
 
     if action == "mouse_move":
         x, y = _to_native(pyautogui, ti.get("coordinate"))
@@ -336,6 +341,14 @@ def _to_native(pyautogui, coordinate) -> tuple[int, int]:
     # Clamp: a coordinate slightly outside the declared box is a rounding
     # artefact, not a reason to fail the action.
     return max(0, min(x, native_w - 1)), max(0, min(y, native_h - 1))
+
+
+def _to_declared(pyautogui, position) -> tuple[int, int]:
+    """Real screen pixels -> declared-space coordinate (inverse of `_to_native`)."""
+    native_w, native_h = pyautogui.size()
+    x = round(int(position[0]) * DISPLAY_WIDTH / native_w)
+    y = round(int(position[1]) * DISPLAY_HEIGHT / native_h)
+    return max(0, min(x, DISPLAY_WIDTH - 1)), max(0, min(y, DISPLAY_HEIGHT - 1))
 
 
 def _grab(pyautogui):
