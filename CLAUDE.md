@@ -52,9 +52,10 @@ tells you where to be careful.
 |---|---|
 | `core/cli.py` | copied; diverged when `/workers`/`/dagent` were added, and again when `/voice`/`/listen` were ported over from ResearchMesh |
 | `mcp_client.py` | copied, plus `timeout_seconds` |
-| `core/browser.py`, `config_edit.py`, `data.py`, `documents.py`, `files.py`, `kernel.py`, `listen.py`, `memory.py`, `processes.py`, `speak.py`, `claude_learned_schemas.py`, `output.py`, `text_embeddings.py`, `vision.py` | copied verbatim in the tool merge, unchanged |
+| `core/browser.py`, `config_edit.py`, `data.py`, `documents.py`, `files.py`, `kernel.py`, `listen.py`, `memory.py`, `processes.py`, `speak.py`, `output.py`, `text_embeddings.py`, `vision.py` | copied verbatim in the tool merge, unchanged |
 | `core/bash_session.py`, `process_reaper.py` | ported from ResearchMesh after the tool merge (bash_session added there first, process_reaper alongside it), copied verbatim, kept in the same byte-identical set as the row above |
 | `core/computer.py` | copied verbatim in the tool merge; since diverged here first — migrated from `computer_20251124` to `computer_toolset_20260801` ahead of ResearchMesh's own copy, see the "byte-identical copies" note just below this table for why and what restores parity |
+| `core/claude_learned_schemas.py` | copied verbatim in the tool merge; since diverged here too — `web_search`/`web_fetch` now declare `allowed_callers: ["direct"]` explicitly, a Haiku-compatibility fix (see `core/claude.py`'s Architecture bullet above), same "diverged here first, port back to restore parity" situation as `computer.py` |
 | `main.py`, `core/chat.py` | same skeleton; local-tool wiring restored, `SYSTEM_PROMPT` rewritten |
 | `core/claude.py` | same skeleton; still posts to the beta endpoint (originally restored because `computer_20251124` needed it — that need is gone now that `computer.py` uses `computer_toolset_20260801`, but the beta endpoint stayed since it costs nothing to keep, see its Architecture bullet below) |
 | `core/tools.py` | rebuilt for this project; only the result-formatting helpers survive |
@@ -62,11 +63,12 @@ tells you where to be careful.
 
 The tool modules are meant to be byte-identical copies of ResearchMesh's own.
 Keep them that way — a fix in either repo should be a straight `cp`. `diff -rq
---exclude=__pycache__ ../ResearchMesh/core core` currently reports six
-differing files (`chat.py`, `claude.py`, `cli.py`, `computer.py`,
-`local_tools.py`, `tools.py`) plus one file only on the ResearchMesh side
-(`midi1.py` — this repo has no MIDI tool); every other tool module matches byte
-for byte, and anything else appearing in that list is drift worth explaining.
+--exclude=__pycache__ ../ResearchMesh/core core` currently reports seven
+differing files (`chat.py`, `claude.py`, `claude_learned_schemas.py`,
+`cli.py`, `computer.py`, `local_tools.py`, `tools.py`) plus one file only on
+the ResearchMesh side (`midi1.py` — this repo has no MIDI tool); every other
+tool module matches byte for byte, and anything else appearing in that list is
+drift worth explaining.
 **`cli.py` is expected to differ, not a regression** — see its own Architecture
 bullet below for exactly what it carries beyond ResearchMesh's copy
 (`/workers`/`/dagent`, genuinely router-specific; `/voice`/`/listen`, ported
@@ -85,8 +87,17 @@ ResearchMesh's own `core/computer.py` (plus the matching `local_tools.py`/
 `chat.py`/`smoke_test.py` fixes for a toolset entry's missing `name` field) is
 the expected next step to restore byte-identity** — until that happens,
 `computer.py` belongs in this diff list as a real, known, temporary divergence,
-not a mistake. Re-run the `diff` above rather than trusting this file count if
-the tool set or this migration's status on either side ever changes.
+not a mistake. **`claude_learned_schemas.py` diverged the same way, same
+session**: `web_search`/`web_fetch` now declare `allowed_callers: ["direct"]`,
+fixing a real Haiku-only failure ("does not support programmatic tool
+calling") with a root-cause schema correction rather than a runtime
+workaround — see `core/claude.py`'s Architecture bullet above for the full
+reasoning and the separate, complementary runtime handler this same
+investigation added for the ONE remaining Haiku incompatibility that has no
+schema-level fix (the computer tool itself). Porting this one-line change back
+to ResearchMesh's own copy is equally expected and equally not yet done.
+Re-run the `diff` above rather than trusting this file count if the tool set
+or either migration's status on either side ever changes.
 
 **One thing to know for the next MCP SDK major.** `mcp_client.py` and
 `core/tools.py` are the two files that broke on mcp 1.x → 2.x: the transport
@@ -309,6 +320,31 @@ worker MCP tools**.
     (1024 tokens on Sonnet 5) simply isn't cached, with no error, and any byte
     change early in the prefix invalidates everything after it.
     `CLAUDE_SHOW_USAGE=1` is the only way to confirm it is landing.
+
+  **Per-model tool compatibility, self-healing rather than hand-maintained.**
+  Not every Anthropic-defined tool type works on every model — confirmed
+  live: Haiku 4.5 flatly rejects `computer_toolset_20260801` (a genuine model
+  limitation, not a schema bug — it can't use the older `computer_20251124`
+  either, so there is no computer-tool version it supports at all). The API
+  fails the WHOLE request over one incompatible tool, so `/model swap` to
+  Haiku would otherwise 400 on every single turn, including ones that never
+  touch the offending tool — this is exactly the failure mode a user hit
+  live. `Claude.chat()` now catches a `BadRequestError` whose body matches
+  Anthropic's own fixed "does not support tool types: ..." wording, parses
+  out the offending type(s), remembers them in `self._unsupported_by_model`
+  (keyed by model name, so Opus using the computer tool is unaffected by
+  Haiku being unable to), filters them out, and retries once — transparently,
+  with a one-line `[model compat]` console note rather than silence. Every
+  later request for that same model filters proactively from the cache, so
+  only the FIRST turn on a newly-incompatible model pays for a retry; nothing
+  is hand-maintained, since it adapts to whatever the live API actually says,
+  for any current or future tool — not just this one case. A separate,
+  narrower fix went in alongside this: `web_search`/`web_fetch` now declare
+  `allowed_callers: ["direct"]` explicitly in `claude_learned_schemas.py`,
+  since leaving it unset was ALSO breaking Haiku (a different error —
+  "does not support programmatic tool calling" — for a different reason:
+  Haiku can't be a `code_execution` caller, which this project never uses
+  anyway) with a real root-cause schema fix rather than a runtime workaround.
 
 - **`mcp_client.py`** — kept close to the copy it came from, deliberately, so
   the two remain easy to compare by eye when the MCP SDK next changes shape.

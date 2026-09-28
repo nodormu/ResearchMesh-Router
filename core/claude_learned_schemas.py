@@ -23,8 +23,29 @@ TEXT_EDITOR_TOOL = {
 # `response_inclusion` to both (not required — set it to "excluded" to drop dynamically-filtered
 # result blocks from the response); web_fetch also carries `use_cache` from
 # 20260309. Both are left at their defaults ("full" / true) here.
-WEB_SEARCH_TOOL = {"type": "web_search_20260318", "name": "web_search"}
-WEB_FETCH_TOOL = {"type": "web_fetch_20260318", "name": "web_fetch"}
+#
+# `allowed_callers: ["direct"]` is explicit, not a default restatement: leaving
+# it unset implicitly opts these tools into "programmatic tool calling" (being
+# invokable from inside Anthropic's own `code_execution` tool), which this
+# project doesn't use — `code_execution` appears nowhere in this codebase on
+# purpose (see researchmesh_new_anthropic_tool_stubs_review.md in /memories).
+# The cost of leaving that door open anyway showed up live: Claude Haiku 4.5
+# rejects the whole request with "does not support programmatic tool calling"
+# the moment web_search/web_fetch are declared without this, even though
+# Haiku is otherwise perfectly capable of calling either tool directly. This
+# is a straight correctness fix, not a workaround — it makes the declared
+# schema match how these tools are actually invoked here on every model, not
+# just Haiku.
+WEB_SEARCH_TOOL = {
+    "type": "web_search_20260318",
+    "name": "web_search",
+    "allowed_callers": ["direct"],
+}
+WEB_FETCH_TOOL = {
+    "type": "web_fetch_20260318",
+    "name": "web_fetch",
+    "allowed_callers": ["direct"],
+}
 
 TOOLS = [BASH_TOOL, TEXT_EDITOR_TOOL, WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
 
