@@ -1,22 +1,37 @@
-"""`computer` — Anthropic's client-executed computer use tool (`computer_20251124`).
+"""`computer` — Anthropic's client-executed computer use TOOLSET
+(`computer_toolset_20260801`).
 
-A learned schema: Claude already knows the action vocabulary (screenshot, clicks,
-type, key, scroll, drag, zoom, …), so there is no description to write. This
-module supplies the eyes and hands — screen capture via Pillow/pyautogui, input
-via pyautogui — and, more importantly, the coordinate contract.
+A learned schema: Claude already knows the 17-member action vocabulary
+(screenshot, clicks, type, key, scroll, drag, zoom, …), so there is no
+description to write. This module supplies the eyes and hands — screen capture
+via Pillow/pyautogui, input via pyautogui — and, more importantly, the
+coordinate contract.
 
-**Coordinates.** Claude returns coordinates in the space of the image it was
-sent, so the declared `display_width_px`/`display_height_px` must match the
-screenshot's real pixel dimensions or every click lands offset. Real screens are
-usually larger than the ~1.15MP that reads well, so this module declares one
-fixed logical size (`CLAUDE_DISPLAY_SIZE`, default 1280x800), always downscales
-captures to exactly that, and scales Claude's coordinates back up to native
-screen space. Declared size and sent image can therefore never drift apart.
+**This is a client TOOLSET, not a single tool** — one `{"type":
+"computer_toolset_20260801"}` entry in `tools` (carrying no `name` of its own)
+expands into 17 separate member tools server-side. Claude's calls are
+`tool_use` blocks whose `name` IS the member (`"left_click"`, `"type"`, …) and
+which carry an extra `"toolset_name": "computer"` field; the paired
+`tool_result` must echo that same `toolset_name` back or the API rejects it —
+see core/chat.py's `_run_tool_uses` for where that round-trip happens. This
+replaces the older single-tool `computer_20251124` schema (still in Anthropic's
+"earlier tool versions" list, but not supported at all by every model this
+project targets — see researchmesh_client_dev_log.md in /memories for the
+live compatibility matrix and the reasoning behind this migration).
 
-**This tool is beta-gated.** `computer_20251124` requires the
-`computer-use-2025-11-24` beta header, which is why core/claude.py posts to
-`client.beta.messages.create` — see BETAS there. Declaring this tool without
-that header is a 400 on every request, not just computer-use ones.
+**Coordinates.** Claude returns coordinates in the space of whatever image it
+was last sent — there is no `display_width_px`/`display_height_px` field on
+this schema at all (the older single-tool version had one; the toolset does
+not, by design). Real screens are usually larger than the ~1.15MP that reads
+well, so this module still declares one fixed logical size
+(`CLAUDE_DISPLAY_SIZE`, default 1280x800), always downscales captures to
+exactly that, and scales Claude's coordinates back up to native screen space —
+purely this module's own choice now, not a schema requirement, but kept for
+the same accuracy/cost reasons Anthropic's own docs still recommend it.
+
+**No beta header needed.** Unlike `computer_20251124`, this toolset ships as a
+stable (non-beta) feature — there is no `BETA_FLAG` here, and core/claude.py's
+`BETAS` list is empty as a direct result of this migration.
 
 **Wayland.** Input synthesis and screen capture here go through X11/XTEST. On a
 Wayland session that reaches XWayland clients at best and native Wayland windows
@@ -53,21 +68,42 @@ def _declared_size() -> tuple[int, int]:
 
 DISPLAY_WIDTH, DISPLAY_HEIGHT = _declared_size()
 
-COMPUTER_TOOL = {
-    "type": "computer_20251124",
-    "name": "computer",
-    "display_width_px": DISPLAY_WIDTH,
-    "display_height_px": DISPLAY_HEIGHT,
-    # Lets Claude re-inspect a region at native resolution instead of asking for
-    # a second full screenshot — cheaper, and the only way to read small text
-    # once the capture has been downscaled to the declared size.
-    "enable_zoom": True,
-}
+# A toolset entry carries no `name` — the dated `type` fixes the member set,
+# and every member (including zoom) defaults to enabled, so there is nothing
+# to override via `configs` for how this module wants to run. Deliberately NOT
+# using `configs` at all rather than spelling out `{"zoom": {"enabled": True}}`
+# — that would be a no-op restating the default, and a landmine for future
+# drift if Anthropic ever changes a *different* member's default.
+COMPUTER_TOOL = {"type": "computer_toolset_20260801"}
 TOOLS = [COMPUTER_TOOL]
 
-# The beta header this tool requires. core/claude.py reads it from here so the
-# header and the tool version can never drift apart.
-BETA_FLAG = "computer-use-2025-11-24"
+# The 17 member tool names this toolset expands into server-side — Claude's
+# tool_use blocks carry one of these as `name` (never "computer" itself, which
+# was the old single-tool schema's name and no longer means anything here).
+# Keep this in exact sync with Anthropic's own member table if they ever add
+# one; scripts/check_midi1_schema.py-style drift-checking would be the place
+# to automate that if it becomes a recurring problem.
+_MEMBERS = frozenset(
+    {
+        "screenshot",
+        "zoom",
+        "left_click",
+        "right_click",
+        "middle_click",
+        "double_click",
+        "triple_click",
+        "left_click_drag",
+        "mouse_move",
+        "left_mouse_down",
+        "left_mouse_up",
+        "cursor_position",
+        "scroll",
+        "type",
+        "key",
+        "hold_key",
+        "wait",
+    }
+)
 
 # Let the UI repaint before we capture the result of an action.
 _SETTLE = 0.4
@@ -98,13 +134,13 @@ _NO_SCREENSHOT = {"wait", "screenshot", "zoom"}
 
 
 def handles(name: str) -> bool:
-    return name == "computer"
+    return name in _MEMBERS
 
 
 async def execute(name: str, tool_input: dict) -> str | dict:
-    if name != "computer":
-        return f"Error: {name} is not handled by the computer tool"
-    return await asyncio.to_thread(_run, tool_input)
+    if name not in _MEMBERS:
+        return f"Error: {name} is not a computer-toolset member"
+    return await asyncio.to_thread(_run, name, tool_input)
 
 
 def _guard() -> str | None:
@@ -132,14 +168,18 @@ def _guard() -> str | None:
     return None
 
 
-def _run(tool_input: dict) -> str | dict:
+def _run(action: str, tool_input: dict) -> str | dict:
+    """`action` is now the member's own name (Claude's tool_use `name`) — the
+    old single-tool schema instead carried it as `tool_input["action"]`
+    alongside a fixed outer tool name of `"computer"`. Everything below this
+    point (`_dispatch` and everything it calls) already took `action` as its
+    own explicit parameter, decoupled from how it was obtained — so none of
+    that logic needed to change for this migration, only how `action` gets
+    here.
+    """
     blocked = _guard()
     if blocked:
         return blocked
-
-    action = tool_input.get("action")
-    if not action:
-        return "Error: no action provided"
 
     try:
         import pyautogui

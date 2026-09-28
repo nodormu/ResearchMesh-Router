@@ -52,26 +52,41 @@ tells you where to be careful.
 |---|---|
 | `core/cli.py` | copied; diverged when `/workers`/`/dagent` were added, and again when `/voice`/`/listen` were ported over from ResearchMesh |
 | `mcp_client.py` | copied, plus `timeout_seconds` |
-| `core/browser.py`, `computer.py`, `config_edit.py`, `data.py`, `documents.py`, `files.py`, `kernel.py`, `listen.py`, `memory.py`, `processes.py`, `speak.py`, `claude_learned_schemas.py`, `local_tools.py`, `output.py`, `text_embeddings.py`, `vision.py` | copied verbatim in the tool merge, unchanged |
+| `core/browser.py`, `config_edit.py`, `data.py`, `documents.py`, `files.py`, `kernel.py`, `listen.py`, `memory.py`, `processes.py`, `speak.py`, `claude_learned_schemas.py`, `output.py`, `text_embeddings.py`, `vision.py` | copied verbatim in the tool merge, unchanged |
 | `core/bash_session.py`, `process_reaper.py` | ported from ResearchMesh after the tool merge (bash_session added there first, process_reaper alongside it), copied verbatim, kept in the same byte-identical set as the row above |
+| `core/computer.py` | copied verbatim in the tool merge; since diverged here first — migrated from `computer_20251124` to `computer_toolset_20260801` ahead of ResearchMesh's own copy, see the "byte-identical copies" note just below this table for why and what restores parity |
 | `main.py`, `core/chat.py` | same skeleton; local-tool wiring restored, `SYSTEM_PROMPT` rewritten |
-| `core/claude.py` | same, including the beta endpoint (restored with `computer`) |
+| `core/claude.py` | same skeleton; still posts to the beta endpoint (originally restored because `computer_20251124` needed it — that need is gone now that `computer.py` uses `computer_toolset_20260801`, but the beta endpoint stayed since it costs nothing to keep, see its Architecture bullet below) |
 | `core/tools.py` | rebuilt for this project; only the result-formatting helpers survive |
 | `smoke_test.py`, `e2e_test.py`, `e2e_worker.py`, `config.toml` | written here |
 
-The eighteen tool modules are byte-identical copies. Keep them that way — a fix in
-either repo should be a straight `cp`. `diff -rq --exclude=__pycache__
-../ResearchMesh/core core` currently reports five differing files (`chat.py`,
-`claude.py`, `cli.py`, `local_tools.py`, `tools.py`) plus one file only on the
-ResearchMesh side (`midi1.py` — this repo has no MIDI tool); all eighteen tool
-modules match byte for byte, and anything else appearing in that list is drift
-worth explaining. **`cli.py` is expected to differ, not a regression** — see its
-own Architecture bullet below for exactly what it carries beyond ResearchMesh's
-copy (`/workers`/`/dagent`, genuinely router-specific; `/voice`/`/listen`, ported
+The tool modules are meant to be byte-identical copies of ResearchMesh's own.
+Keep them that way — a fix in either repo should be a straight `cp`. `diff -rq
+--exclude=__pycache__ ../ResearchMesh/core core` currently reports six
+differing files (`chat.py`, `claude.py`, `cli.py`, `computer.py`,
+`local_tools.py`, `tools.py`) plus one file only on the ResearchMesh side
+(`midi1.py` — this repo has no MIDI tool); every other tool module matches byte
+for byte, and anything else appearing in that list is drift worth explaining.
+**`cli.py` is expected to differ, not a regression** — see its own Architecture
+bullet below for exactly what it carries beyond ResearchMesh's copy
+(`/workers`/`/dagent`, genuinely router-specific; `/voice`/`/listen`, ported
 over and behaviorally identical to ResearchMesh's own). **`local_tools.py` is
 expected to differ too** — its `MODULES` list correctly has no `midi1` entry,
-since this repo carries no MIDI tool; re-run the `diff` above rather than
-trusting this file count if the tool set on either side ever changes.
+since this repo carries no MIDI tool. **`computer.py` differs for a different
+reason than the other five, and NOT permanently by design**: it was migrated
+here first, ahead of ResearchMesh's own copy, from the old single-tool
+`computer_20251124` schema to the newer `computer_toolset_20260801` client
+toolset (fixes Opus 5.5, which rejects `computer_20251124` outright — see
+`researchmesh_client_dev_log.md` in ResearchMesh's own `/memories` for the full
+compatibility matrix and reasoning). Router was chosen as the test bed
+deliberately, precisely so this could be verified against the real API without
+touching the canonical repo first. **Porting the same migration to
+ResearchMesh's own `core/computer.py` (plus the matching `local_tools.py`/
+`chat.py`/`smoke_test.py` fixes for a toolset entry's missing `name` field) is
+the expected next step to restore byte-identity** — until that happens,
+`computer.py` belongs in this diff list as a real, known, temporary divergence,
+not a mistake. Re-run the `diff` above rather than trusting this file count if
+the tool set or this migration's status on either side ever changes.
 
 **One thing to know for the next MCP SDK major.** `mcp_client.py` and
 `core/tools.py` are the two files that broke on mcp 1.x → 2.x: the transport
@@ -249,10 +264,14 @@ worker MCP tools**.
   factual and update it if the routing model changes.**
 
 - **`core/claude.py`** — thin Anthropic SDK wrapper, now the same as
-  ResearchMesh's. It posts to `client.beta.messages.create` with
-  `betas=[computer-use-2025-11-24]` because `local_tools` declares the
-  beta-gated `computer` tool on every request, and omitting the header 400s the
-  whole conversation rather than just computer use. That endpoint returns
+  ResearchMesh's. It posts to `client.beta.messages.create` with an empty
+  `BETAS` list — a holdover from when `local_tools` declared the beta-gated
+  `computer_20251124` tool on every request (omitting that header used to 400
+  the whole conversation, not just computer use). `core/computer.py` has since
+  migrated to `computer_toolset_20260801`, which ships as a stable, non-beta
+  feature, so nothing requires the beta endpoint anymore — it stays in use
+  anyway because it is a strict superset of the plain one, so keeping it costs
+  nothing. That endpoint returns
   `BetaMessage`, which is **not** a subclass of `Message`, so the isinstance
   checks need the `_RESPONSE_TYPES` tuple covering both — without it they
   silently stuff the response object into `content` instead of its blocks. This

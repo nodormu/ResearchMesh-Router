@@ -8,8 +8,6 @@ from anthropic import Anthropic
 from anthropic.types import Message
 from anthropic.types.beta import BetaMessage
 
-from core.computer import BETA_FLAG as COMPUTER_BETA
-
 # core/claude.py -> parent is core/, parent.parent is the repo root — same
 # resolution main.py/core/vision.py/core/speak.py use for their own config
 # path, so this doesn't drift if the repo is ever moved. Ported from
@@ -221,18 +219,21 @@ def refresh_claude_models(
     return fresh_models
 
 
-# Betas sent on every request. The `computer` tool's `computer_20251124` schema
-# is beta-gated and local_tools declares it unconditionally, so this header must
-# be unconditional too — omitting it 400s the whole request, not just computer
-# use. The beta Messages endpoint is a superset of the stable one, so nothing
-# else changes shape.
+# Betas sent on every request. Empty as of the migration to
+# `computer_toolset_20260801` (see core/computer.py) — that toolset ships as a
+# stable, non-beta feature, unlike the older `computer_20251124` single-tool
+# schema this project used to declare, which needed the
+# `computer-use-2025-11-24` header unconditionally. Still posting to
+# `client.beta.messages.create` rather than reverting to the plain endpoint:
+# the beta Messages endpoint is a superset of the stable one (nothing changes
+# shape by staying on it with an empty `betas` list), and staying put here
+# keeps this migration scoped to the tool schema itself rather than also
+# touching the request-endpoint choice in the same change.
 #
-# This is a straight revert of a simplification that held only while the router
-# had no local tools of its own. A *worker's* beta-gated tools remain entirely
-# the worker's problem — it makes its own API call with its own headers, and
-# nothing about a worker's schemas reaches this request. What changed is that
-# the router now declares `computer` itself.
-BETAS = [COMPUTER_BETA]
+# A *worker's* beta-gated tools remain entirely the worker's problem — it
+# makes its own API call with its own headers, and nothing about a worker's
+# schemas reaches this request.
+BETAS: list[str] = []
 
 # The beta endpoint returns BetaMessage, which is NOT a subclass of Message, so
 # the response-vs-raw-content checks below must accept both. Testing only
@@ -245,9 +246,11 @@ _RESPONSE_TYPES = (Message, BetaMessage)
 class Claude:
     """Thin Anthropic SDK wrapper.
 
-    Posts to `client.beta.messages.create` because the local `computer` tool is
-    beta-gated; see BETAS above. Top-level `cache_control` works on both
-    endpoints, so prompt caching is unaffected by the switch.
+    Posts to `client.beta.messages.create` — a deliberate holdover from when
+    the local `computer` tool needed a beta header (see BETAS above, now
+    empty). Kept rather than reverted to the plain endpoint because the beta
+    endpoint is a strict superset; top-level `cache_control` works on both, so
+    prompt caching is unaffected either way.
     """
 
     def __init__(self, model: str):

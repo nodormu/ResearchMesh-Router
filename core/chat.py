@@ -6,6 +6,14 @@ from anthropic.types import MessageParam, ToolResultBlockParam
 from mcp.types import TextContent
 
 from core import local_tools
+
+# Names already spoken for by the router's own local tools, for
+# ToolManager.build's collision guard below. A client TOOLSET entry (e.g.
+# computer.COMPUTER_TOOL) carries no "name" of its own — its members are
+# generated server-side from the dated `type` — so this has to filter rather
+# than assume every local_tools.TOOLS entry has a "name" key. Computed once at
+# import time since local_tools.TOOLS is itself a fixed module-level constant.
+_LOCAL_TOOL_NAMES = {t["name"] for t in local_tools.TOOLS if "name" in t}
 from core.claude import Claude
 from core.claude_learned_schemas import SHELL_EXECUTABLE
 from core.tools import ToolIndex, ToolManager, Worker
@@ -566,16 +574,26 @@ class Chat:
         worker_blocks: list = []
 
         for block in blocks:
+            # For a computer-toolset member call, `block.toolset_name` is
+            # "computer" (None for every ordinary, non-toolset tool_use). The
+            # paired tool_result must echo the exact same value back or the
+            # API rejects the whole batch — computed once per block so both
+            # the success and error paths below stay in sync automatically.
+            toolset_name = getattr(block, "toolset_name", None)
+
             try:
                 local = await local_tools.execute(block.name, block.input)
             except Exception as e:
                 print(f"[local tool '{block.name}' raised: {e}]")
-                by_id[block.id] = {
+                result: ToolResultBlockParam = {
                     "type": "tool_result",
                     "tool_use_id": block.id,
                     "content": f"Error executing tool '{block.name}': {e}",
                     "is_error": True,
                 }
+                if toolset_name is not None:
+                    result["toolset_name"] = toolset_name
+                by_id[block.id] = result
                 continue
 
             # `None` means no local module owns that name — it belongs to a
@@ -585,11 +603,14 @@ class Chat:
                 worker_blocks.append(block)
                 continue
 
-            by_id[block.id] = {
+            result = {
                 "type": "tool_result",
                 "tool_use_id": block.id,
                 "content": _local_result_to_content(local),
             }
+            if toolset_name is not None:
+                result["toolset_name"] = toolset_name
+            by_id[block.id] = result
 
         if worker_blocks:
             for block, result in zip(
@@ -805,7 +826,7 @@ class Chat:
         index = await ToolManager.build(
             self.clients,
             self.descriptions,
-            reserved={t["name"] for t in local_tools.TOOLS},
+            reserved=_LOCAL_TOOL_NAMES,
         )
         worker_ids = index.worker_ids()
         if not worker_ids:
@@ -958,7 +979,7 @@ class Chat:
         index = await ToolManager.build(
             self.clients,
             self.descriptions,
-            reserved={t["name"] for t in local_tools.TOOLS},
+            reserved=_LOCAL_TOOL_NAMES,
         )
 
         if remote_only:

@@ -385,9 +385,16 @@ def check_local_tools() -> None:
     from core import local_tools
     from core.chat import Chat
     from core.claude import BETAS, Claude
+    from core.computer import COMPUTER_TOOL
     from core.tools import ToolManager
 
-    names = [t["name"] for t in local_tools.TOOLS]
+    # A client TOOLSET entry (currently just computer.COMPUTER_TOOL) carries
+    # no "name" at all — its member tools are generated server-side from the
+    # dated `type` string, never spelled out in this array — so every check
+    # below that means "a local tool's *name*" has to filter those out rather
+    # than assume every TOOLS entry has one.
+    named = [t for t in local_tools.TOOLS if "name" in t]
+    names = [t["name"] for t in named]
     check("local tools are declared", len(names) > 0, f"{len(names)} found")
     check("no duplicate local names", len(set(names)) == len(names))
     check(
@@ -396,8 +403,15 @@ def check_local_tools() -> None:
         str([n for n in names if not TOOL_NAME_RE.match(n)]),
     )
     check(
-        "computer's beta flag is declared",
-        any("computer" in b for b in BETAS),
+        "the computer toolset is declared, type-only, no name",
+        COMPUTER_TOOL in local_tools.TOOLS
+        and COMPUTER_TOOL.get("type") == "computer_toolset_20260801"
+        and "name" not in COMPUTER_TOOL,
+        str(COMPUTER_TOOL),
+    )
+    check(
+        "no beta header needed now that computer is a stable toolset",
+        BETAS == [],
         f"BETAS={BETAS}",
     )
 
@@ -534,7 +548,8 @@ def check_dagent_and_workers() -> None:
     from core.claude import Claude
     from core.tools import ToolManager
 
-    local_names = {t["name"] for t in local_tools.TOOLS}
+    # See check_local_tools() above: a client TOOLSET entry has no "name".
+    local_names = {t["name"] for t in local_tools.TOOLS if "name" in t}
     workers = {"alpha": FakeWorker(["delegate"]), "beta": FakeWorker(["delegate"])}
     descriptions = {"alpha": "the first box", "beta": "the second box"}
     chat = Chat(
@@ -577,7 +592,11 @@ def check_dagent_and_workers() -> None:
     )
 
     # The guarantee itself, checked on the schemas that would actually be sent.
-    everything = [t["name"] for t in local_tools.TOOLS + index.tool_defs]
+    # (Again filtering local_tools.TOOLS for "name" — the computer toolset
+    # entry has none; index.tool_defs entries always do, per ToolManager.add.)
+    everything = [t["name"] for t in local_tools.TOOLS if "name" in t] + [
+        t["name"] for t in index.tool_defs
+    ]
     check("a normal turn offers both halves", local_names <= set(everything))
     remote = [t["name"] for t in index.tool_defs]
     check(
