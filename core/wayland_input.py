@@ -28,6 +28,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from core.dbus_loop import Loop
+
 _PORTAL = "org.freedesktop.portal.Desktop"
 _PORTAL_PATH = "/org/freedesktop/portal/desktop"
 # dbus-next cannot parse the portal's full introspection (a property named
@@ -72,22 +74,6 @@ def keysym(key: str) -> int:
     if len(key) == 1:
         return ord(key) if ord(key) < 0x100 else 0x01000000 + ord(key)
     raise ValueError(f"unknown key {key!r}")
-
-
-class _Loop:
-    """A private asyncio loop in a daemon thread that owns the D-Bus connection."""
-
-    def __init__(self) -> None:
-        self.loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self.loop.run_forever, daemon=True, name="wayland-portal")
-        self._thread.start()
-
-    def run(self, coro, timeout: float):
-        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
-
-    def stop(self) -> None:
-        self.loop.call_soon_threadsafe(self.loop.stop)
-        self._thread.join(5)
 
 
 class _Portal:
@@ -329,7 +315,7 @@ def _connect() -> PortalInput:
         "While it lasts a 'Remote Control' tray icon shows; its 'End' entry stops it.",
         flush=True,
     )
-    loop, portal = _Loop(), _Portal()
+    loop, portal = Loop("wayland-portal"), _Portal()
     try:
         loop.run(portal.start(), _APPROVAL_SECONDS + 15)
     except Exception:

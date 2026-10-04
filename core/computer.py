@@ -186,6 +186,40 @@ def _guard() -> str | None:
     return None
 
 
+def _backend() -> tuple[Any, str | None]:
+    """(input and capture backend, error): the portal on Wayland, else pyautogui."""
+    if _wayland_session():
+        try:
+            return wayland_input.backend(), None
+        except Exception as e:
+            return None, f"Error: remote control of the Wayland desktop failed: {e}"
+    try:
+        import pyautogui
+    except Exception as e:  # ImportError, or X11 lookup failure at import
+        return None, (
+            f"Error: the computer tool needs pyautogui ({e}). "
+            "Install it with: pip install pyautogui pillow"
+        )
+    # Its default is to abort on a corner-of-screen mouse position; that turns a
+    # legitimate click at (0, 0) into a crash.
+    pyautogui.FAILSAFE = False
+    return pyautogui, None
+
+
+def capture() -> tuple[Any, str | None]:
+    """(native-resolution PIL image, error) of the screen this tool controls."""
+    blocked = _guard()
+    if blocked:
+        return None, blocked
+    backend, error = _backend()
+    if error:
+        return None, error
+    try:
+        return _grab(backend), None
+    except Exception as e:
+        return None, f"Error: could not capture the screen: {e}"
+
+
 def _run(action: str, tool_input: dict) -> str | dict:
     """`action` is now the member's own name (Claude's tool_use `name`) — the
     old single-tool schema instead carried it as `tool_input["action"]`
@@ -199,24 +233,9 @@ def _run(action: str, tool_input: dict) -> str | dict:
     if blocked:
         return blocked
 
-    backend: Any
-    if _wayland_session():
-        try:
-            backend = wayland_input.backend()
-        except Exception as e:
-            return f"Error: remote control of the Wayland desktop failed: {e}"
-    else:
-        try:
-            import pyautogui
-        except Exception as e:  # ImportError, or X11 lookup failure at import
-            return (
-                f"Error: the computer tool needs pyautogui ({e}). "
-                "Install it with: pip install pyautogui pillow"
-            )
-        backend = pyautogui
-    # Its default is to abort on a corner-of-screen mouse position; that turns a
-    # legitimate click at (0, 0) into a crash.
-    backend.FAILSAFE = False
+    backend, error = _backend()
+    if error:
+        return error
 
     try:
         result = _dispatch(backend, action, tool_input)

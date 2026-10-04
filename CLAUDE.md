@@ -56,6 +56,7 @@ tells you where to be careful.
 | `core/browser.py`, `browser_session.py` | `browser.py` copied; diverged here with `value_secret`, then launch modes, profiles, tabs and downloads (launch code moved into the new `browser_session.py`) |
 | `core/bash_session.py`, `process_reaper.py` | ported from ResearchMesh after the tool merge (bash_session added there first, process_reaper alongside it), copied verbatim, kept in the same byte-identical set as the row above |
 | `core/computer.py` | copied verbatim in the tool merge; migrated here first to `computer_toolset_20260801` (a client toolset that expands into 17 member tools), with `cursor_position` added here first too; both ported to ResearchMesh, so it is byte-identical again; gained a Wayland backend here (`core/wayland_input.py`) |
+| `core/desktop_window.py`, `screen_find.py`, `dbus_loop.py` | new here, not in ResearchMesh: window control through KWin scripting, OCR-based find-on-screen, and the D-Bus loop that `wayland_input.py` and `desktop_window.py` share |
 | `core/claude_learned_schemas.py` | copied verbatim in the tool merge; `web_search`/`web_fetch` gained `allowed_callers: ["direct"]` here first (Haiku fix, see the `core/claude.py` bullet), ported to ResearchMesh, byte-identical again |
 | `main.py`, `core/chat.py` | same skeleton; local-tool wiring restored, `SYSTEM_PROMPT` rewritten |
 | `core/claude.py` | same skeleton; still posts to the beta endpoint (originally restored because `computer_20251124` needed it — that need is gone now that `computer.py` uses `computer_toolset_20260801`, but the beta endpoint stayed since it costs nothing to keep, see its Architecture bullet below) |
@@ -738,6 +739,17 @@ worker MCP tools**.
   portal cannot read it back. `computer._wayland_session()` picks the backend and is
   what tests patch. `test_wayland_input.py` drives a fake portal; the real session
   needs the approval dialog and is exercised by hand.
+
+  `desktop_window` scripts KWin: a one-shot script runs inside the compositor and calls
+  back (`callDBus`) into a service this process exports on the session bus, so nothing
+  is parsed from the journal. KDE only. The script embeds its arguments as JSON
+  literals, so nothing the model sends is interpreted as code. `screen_find` reads the
+  screen through `computer.capture()` (X11 or the Wayland backend) with tesseract:
+  word-level OCR in normal and inverted passes, plus a detector for solid-colour
+  rectangles of button size whose crops are read upscaled, because plain OCR misses
+  light text on coloured buttons. Results are in the `computer` tool's declared
+  coordinates. `test_desktop_window.py` and `test_screen_find.py` cover them; the first
+  also lists the real windows when a KDE session is reachable.
 
   `_select_entry_prompt()` reads `$PASSWORD_STORE_DIR` (falling back to
   `pass`'s own documented `~/.password-store` default) and walks `*.gpg`

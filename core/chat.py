@@ -104,8 +104,11 @@ hidden display). If the report still says `Human check: pending`, navigate again
 with `mode: real` (the user's installed Chrome in a visible window they can click
 in) or ask the user to click it. A `profile` name keeps logins between sessions.
 `computer` drives the desktop itself: use it for native apps and for a browser
-window the user already has open, with their own profile and logins. It has no
-vault option, so for a password in a window of that kind ask the user to type it.
+window the user already has open, with their own profile and logins. Put the
+right window in front with `desktop_window` before typing, and get a button's
+click position from `screen_find` (OCR, accurate) instead of estimating it from
+a screenshot. `computer` has no vault option, so for a password in a window of
+that kind ask the user to type it.
 
 The LOCAL `bash` runs commands through **{_SHELL_EXECUTABLE_NAME}** ({SHELL_EXECUTABLE})
 — not necessarily bash despite the tool's name, configurable via config.toml's

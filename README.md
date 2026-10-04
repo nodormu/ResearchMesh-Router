@@ -43,7 +43,7 @@ AIs in Teams or Slack like any other coworker, and route its actual work through
 same systems everyone else's work goes through — a CRM/CMDB (ServiceNow, ConnectWise,
 whatever the organization already runs) as its system of record, change tickets
 opened for anything that touches production. Those are examples, not a fixed list.
-None of that is built into this app's 24 tools directly; it's what
+None of that is built into this app's 26 tools directly; it's what
 [Adding workers](#adding-workers) is *for* — connect a worker to an email MCP server,
 a Teams/Slack one, your CMDB's — and it participates the same way a new hire would,
 through the same front doors, not a side channel. That reframes what "no approval
@@ -72,7 +72,7 @@ convenient to set up.
 
 ## What it can do
 
-**24 local tools**, plus one per connected worker:
+**26 local tools**, plus one per connected worker:
 
 | Tool | For |
 |---|---|
@@ -81,6 +81,8 @@ convenient to set up.
 | `web_search` · `web_fetch` | Anthropic's server-side search and page fetch |
 | `memory` | A `/memories` store that **persists across sessions** — the only state that outlives the process |
 | `computer` | Screenshots plus mouse/keyboard control, on X11 (`pyautogui`) or Wayland (xdg-desktop-portal remote control; needs `dbus-next` and `spectacle` or `grim`) |
+| `desktop_window` | List, focus, move and resize windows on a KDE desktop (KWin scripting; needs `dbus-next`), so keystrokes reach the right window |
+| `screen_find` | Find on-screen text or buttons by OCR and return click coordinates in `computer`'s space; reads text on coloured buttons that plain OCR misses (needs `tesseract`) |
 | `browser_navigate` · `_links` · `_click` · `_fill` · `_extract` · `_back` · `_tab` | [Playwright](https://playwright.dev/), headless by default; `mode` on `browser_navigate` picks `headed`, `virtual` (hidden display) or `real` (installed Chrome) for sites that demand a human check, `profile` keeps cookies — renders JavaScript, follows links and new tabs, saves downloads to `~/Downloads`, fills forms; `_fill` can type a `pass` vault entry (`value_secret`) without the value appearing in the conversation |
 | `document_convert` | LibreOffice + pandoc. Markdown → `.docx`/`.odt`/`.pdf`, or any office format to any other |
 | `python` | Persistent IPython kernel — **variables survive between calls** |
@@ -142,7 +144,7 @@ client, so a Claude subscription won't work.
 
 ```bash
 sudo apt install python3 python3-venv python3-dev build-essential \
-                 libreoffice pandoc python3-tk scrot pulseaudio-utils
+                 libreoffice pandoc python3-tk scrot pulseaudio-utils tesseract-ocr
 
 python3 -m venv ~/researchmesh-router
 source ~/researchmesh-router/bin/activate
@@ -150,7 +152,7 @@ pip install -r requirements.txt
 ```
 
 `libreoffice` + `pandoc` back `document_convert`; `python3-tk` and `scrot` back
-`computer` — see step 3. `pulseaudio-utils` backs `speak`/`listen` (`paplay`/
+`computer` — see step 3. `tesseract-ocr` backs `screen_find`. `pulseaudio-utils` backs `speak`/`listen` (`paplay`/
 `parecord`) — both call it directly with no fallback, so unlike most per-tool
 packages it isn't a clean "tool declares itself unavailable" story if it's missing,
 just a raw subprocess failure; it's usually already present on a real desktop
@@ -218,7 +220,7 @@ python main.py
 ```
 
 **Workers ship disabled** — `config.toml` ships with every server commented out, so a
-fresh clone runs on the 24 local tools alone.
+fresh clone runs on the 26 local tools alone.
 
 ### 6) Using it
 
@@ -516,7 +518,7 @@ A caveat on precision: I can tell you how the tool is documented and designed to
 
 Non-secret settings live in `config.toml`. Secrets stay in the environment — the app
 does **not** read a `.env` file. **Workers ship disabled** — it ships with every server
-commented out, so a fresh clone runs on the 24 local tools alone.
+commented out, so a fresh clone runs on the 26 local tools alone.
 
 ```toml
 [router]
@@ -626,7 +628,7 @@ core/
   browser.py  browser_session.py  computer.py  wayland_input.py  kernel.py  bash_session.py  memory.py  data.py
   documents.py  processes.py  config_edit.py  files.py  output.py
   claude_learned_schemas.py  text_embeddings.py  vision.py  speak.py
-  listen.py  process_reaper.py
+  listen.py  process_reaper.py  desktop_window.py  screen_find.py  dbus_loop.py
 ```
 
 Adding a **worker** is a config edit, no code. Adding a **local tool** is one module
