@@ -242,6 +242,10 @@ def _run(tool_input: dict) -> str:
     buttons = bool(tool_input.get("buttons"))
     if not text and not buttons:
         return "Error: screen_find needs `text` to find, or `buttons: true`"
+    try:
+        limit = max(1, int(tool_input.get("limit", 10)))
+    except (TypeError, ValueError):
+        return "Error: `limit` must be an integer"
     missing = available()
     if missing:
         return f"Error: screen_find cannot run: {missing}"
@@ -260,7 +264,6 @@ def _run(tool_input: dict) -> str:
         if box[2] <= box[0] or box[3] <= box[1]:
             return f"Error: empty region {region}"
         image, offset = image.crop(box), (box[0], box[1])
-    limit = max(1, int(tool_input.get("limit", 10)))
     matches = find(image, str(text) if text else None, buttons and not text)
     if not matches:
         what = f"{text!r}" if text else "any button-like block"

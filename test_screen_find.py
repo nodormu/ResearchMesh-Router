@@ -112,6 +112,7 @@ async def main_async(sf, computer) -> None:
 
         print("bad calls")
         check("needs text or buttons", (await sf.execute("screen_find", {})).startswith("Error: screen_find needs"))
+        check("bad limit", await sf.execute("screen_find", {"text": "a", "limit": "many"}) == "Error: `limit` must be an integer")
         check("bad region", (await sf.execute("screen_find", {"text": "a", "region": [1, 2]})).startswith("Error: `region`"))
         with mock.patch("shutil.which", return_value=None):
             out = await sf.execute("screen_find", {"text": "a"})
