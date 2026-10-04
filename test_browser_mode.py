@@ -118,6 +118,33 @@ async def main_async(mod, sess, base: str) -> None:
     out = await mod.execute("browser_navigate", {"url": base + "/second"})
     check("a page without a check has no line", "Human check" not in out, out[:200])
 
+    print("a fresh default-mode visit stopped by a check is reopened in virtual mode")
+    mod._CHECK_WAIT = 1.0
+    await mod.shutdown()
+    out = await mod.execute("browser_navigate", {"url": base + "/pending"})
+    if chrome and shutil.which("Xvfb"):
+        check("reopened in virtual mode", "Mode: virtual" in out and "reopened from headless" in out, out[:260])
+        check("the session is now virtual", mod._session.mode == "virtual")
+        check("the hint points at real mode", "Navigate again with mode `real`" in out, out[:400])
+    else:
+        check("without Chrome and Xvfb it stays headless", "Mode: headless" in out and "Human check: pending" in out, out[:260])
+    await mod.shutdown()
+    out = await mod.execute("browser_navigate", {"url": base + "/pending", "mode": "headless"})
+    check("an explicit mode is never reopened", "Mode: headless" in out and "reopened" not in out, out[:200])
+    out = await mod.execute("browser_navigate", {"url": base + "/pending"})
+    check("an open session is never reopened", "Mode: headless" in out and "reopened" not in out, out[:200])
+    await mod.shutdown()
+    out = await mod.execute("browser_navigate", {"url": base + "/second"})
+    check("a page with no check stays headless", "Mode: headless" in out and "reopened" not in out, out[:200])
+    saved_find = mod.find_chrome
+    mod.find_chrome = lambda: None
+    try:
+        check("no installed Chrome means no reopen", await mod._reopen_virtual(base) is None)
+    finally:
+        mod.find_chrome = saved_find
+    check("and the open session is untouched", mod._session is not None and mod._session.mode == "headless")
+    mod._CHECK_WAIT = 8.0
+
     print("a click that opens a tab switches to it; browser_tab lists, switches, closes")
     await mod.execute("browser_navigate", {"url": base})
     out = await mod.execute("browser_click", {"selector": "#tab"})

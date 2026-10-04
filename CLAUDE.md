@@ -720,9 +720,12 @@ worker MCP tools**.
   Downloads are saved to `~/Downloads` (`RESEARCHMESH_DOWNLOAD_DIR` overrides)
   under a unique name and listed as `Downloaded:` lines; a CDP-attached Chrome
   overwrites a same-name file, so it writes to a staging dir first. Reports
-  carry a `Human check:` line. `test_browser_mode.py` covers all of it; run it
-  as `xvfb-run -a python test_browser_mode.py < /dev/null` to keep windows off
-  the desktop.
+  carry a `Human check:` line; a fresh default-mode visit that a check stops is
+  reopened once in `virtual` mode (never `real`, which opens a window). The router
+  prompt in `core/chat.py` says which browsing tool to use. `test_browser_mode.py`
+  covers all of it; run it as
+  `xvfb-run -a python test_browser_mode.py < /dev/null` to keep windows off the
+  desktop.
 
   `core/computer.py` runs on a pyautogui-shaped backend. On a Wayland session that
   is `core/wayland_input.py`: one xdg-desktop-portal RemoteDesktop + ScreenCast

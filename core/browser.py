@@ -13,11 +13,12 @@ Xvfb as well).
 
 import asyncio
 import contextlib
+import shutil
 import time
 from typing import Any
 from urllib.parse import urljoin
 
-from core.browser_session import MODES, PROFILE_NAME, Session, open_session
+from core.browser_session import MODES, PROFILE_NAME, Session, find_chrome, open_session
 from core.output import clip
 from core.processes import _redact, resolve_secret
 
@@ -33,9 +34,11 @@ TOOLS = [
             "links, drill into results, or interact. web_fetch is the narrower "
             "alternative: raw text of one known document, no rendering, no session. "
             "A page with a Cloudflare 'verify you are human' check gets a `Human "
-            "check:` line; when it says pending or a challenge page, navigate again "
-            "with mode `virtual` or `real`. Files the browser downloads are saved to "
-            "~/Downloads and listed as `Downloaded:` lines in a tool result."
+            "check:` line. A fresh visit in the default mode that a human check stops "
+            "is reopened by this tool in `virtual` mode; if the line still says pending "
+            "or a challenge page, navigate again with mode `real` or ask the user to "
+            "click the check. Files the browser downloads are saved to ~/Downloads and "
+            "listed as `Downloaded:` lines in a tool result."
         ),
         "input_schema": {
             "type": "object",
@@ -255,23 +258,32 @@ async def _check_state(page) -> dict:
         return {"widget": False, "token": 0, "wall": False}
 
 
-async def _human_check(page, wait: float = 8.0) -> str:
+_CHECK_WAIT = 8.0
+
+
+def _retry_hint(mode: str) -> str:
+    if mode == "headless":
+        return "Navigate again with mode `virtual` or `real`, or have the user click it in a visible window"
+    if mode in ("headed", "virtual"):
+        return "Navigate again with mode `real`, or have the user click it in a visible window"
+    return "Have the user click it in the open window"
+
+
+async def _human_check(page, wait: float | None = None) -> str:
     """One line on a Cloudflare human check, or '' when the page has none. A
     check that has not solved yet gets a few seconds to."""
     state = await _check_state(page)
-    deadline = time.monotonic() + wait
+    deadline = time.monotonic() + (_CHECK_WAIT if wait is None else wait)
+    hint = _retry_hint(_session.mode if _session else "")
     while (state["wall"] or (state["widget"] and not state["token"])) and time.monotonic() < deadline:
         await asyncio.sleep(0.5)
         state = await _check_state(page)
     if state["wall"]:
-        return "Human check: Cloudflare challenge page is showing. Navigate again with mode `virtual` or `real`."
+        return f"Human check: Cloudflare challenge page is showing. {hint}."
     if state["widget"] and state["token"]:
         return "Human check: solved."
     if state["widget"]:
-        return (
-            "Human check: pending, not solved. Navigate again with mode `virtual` or "
-            "`real`, or have the user click it in a visible window."
-        )
+        return f"Human check: pending, not solved. {hint}."
     return ""
 
 
@@ -304,6 +316,29 @@ async def _ensure_page(mode: str | None = None, profile: str | None = None):
             await shutdown()
             raise
     return _page
+
+
+def _blocked(report: str) -> bool:
+    return "Human check: pending" in report or "Human check: Cloudflare challenge" in report
+
+
+async def _reopen_virtual(url: str) -> str | None:
+    """Retry a fresh default-mode visit that a human check stopped, in a hidden
+    display. Never opens a visible window. None means it could not, and the
+    caller carries on with the headless report."""
+    if find_chrome() is None or shutil.which("Xvfb") is None:
+        return None
+    await shutdown()
+    try:
+        page = await _ensure_page("virtual", None)
+        await page.goto(url, wait_until="domcontentloaded")
+        note = "reopened from headless: its human check did not pass"
+        return await _page_report(page, "Title", f"Mode: {_live_session().describe()}; {note}")
+    except Exception:
+        await shutdown()
+        page = await _ensure_page("headless", None)
+        await page.goto(url, wait_until="domcontentloaded")
+        return None
 
 
 def _live_session() -> Session:
@@ -395,11 +430,17 @@ async def _dispatch(name: str, tool_input: dict) -> str:
         mode, profile, error = _session_options(name, tool_input)
         if error:
             return error
+        fresh = _session is None
         page = await _ensure_page(mode, profile)
 
         if name == "browser_navigate":
             await page.goto(tool_input["url"], wait_until="domcontentloaded")
-            return await _page_report(page, "Title", f"Mode: {_live_session().describe()}")
+            report = await _page_report(page, "Title", f"Mode: {_live_session().describe()}")
+            if fresh and mode is None and profile is None and _blocked(report):
+                reopened = await _reopen_virtual(tool_input["url"])
+                if reopened:
+                    return reopened
+            return report
 
         if name == "browser_extract":
             selector = tool_input["selector"]

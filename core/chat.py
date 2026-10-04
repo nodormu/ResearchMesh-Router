@@ -97,6 +97,16 @@ lives inside those two tools, not as something callable on its own. The same
 absence holds for a worker unless its own tool list says otherwise — check what it
 actually declares rather than assuming a client like this one typically ships one.
 
+Browsing. `web_fetch` reads one known document. `browser_navigate` is for anything
+that needs rendering, links, forms or a login. It starts headless, and when a
+Cloudflare human check stops a fresh visit it reopens itself in `virtual` mode (a
+hidden display). If the report still says `Human check: pending`, navigate again
+with `mode: real` (the user's installed Chrome in a visible window they can click
+in) or ask the user to click it. A `profile` name keeps logins between sessions.
+`computer` drives the desktop itself: use it for native apps and for a browser
+window the user already has open, with their own profile and logins. It has no
+vault option, so for a password in a window of that kind ask the user to type it.
+
 The LOCAL `bash` runs commands through **{_SHELL_EXECUTABLE_NAME}** ({SHELL_EXECUTABLE})
 — not necessarily bash despite the tool's name, configurable via config.toml's
 `[bash].shell`. If it's `zsh`, a prelude already neutralizes unquoted `$var`
