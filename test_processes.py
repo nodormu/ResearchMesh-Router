@@ -16,9 +16,11 @@ import asyncio
 import json
 import os
 import shlex
+import signal
 import stat
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -115,7 +117,7 @@ if [ "$1" = "show" ]; then
     case "$2" in
         existing-entry) echo "fake-secret-value-9k2m"; exit 0 ;;
         fresh-unconfirmed-entry) echo "fake-secret-value-9k2m"; exit 0 ;;
-        sleeps-forever) sleep 999; exit 0 ;;
+        sleeps-forever) sleep 999 & echo $! > "$FAKE_PASS_CHILD_PIDFILE"; wait ;;
         *) echo "Error: $2 is not in the password store." >&2; exit 1 ;;
     esac
 fi
@@ -213,6 +215,8 @@ def check_send_secret_timeout(mod) -> None:
     confirm(mod, "sleeps-forever")
     old_timeout = mod._SEND_SECRET_TIMEOUT
     mod._SEND_SECRET_TIMEOUT = 1
+    pidfile = os.path.join(tempfile.mkdtemp(), "child.pid")
+    os.environ["FAKE_PASS_CHILD_PIDFILE"] = pidfile
     try:
         with _FakePassOnPath():
             r = call(mod, {
@@ -221,15 +225,30 @@ def check_send_secret_timeout(mod) -> None:
             })
     finally:
         mod._SEND_SECRET_TIMEOUT = old_timeout
+        del os.environ["FAKE_PASS_CHILD_PIDFILE"]
+    # The fake `pass` started a child, as the real one starts gpg. Killing only
+    # `pass` would leave it running.
+    with open(pidfile) as f:
+        child = int(f.read())
+    alive = True
+    for _ in range(20):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            alive = False
+            break
+        time.sleep(0.1)
+    if alive:
+        os.kill(child, signal.SIGKILL)
+    check("the timed-out `pass` leaves no child process behind", not alive, f"pid {child}")
     check("returns an error", "error" in r, str(r))
     check("error explains the likely cause (unanswerable passphrase prompt)", "passphrase" in r.get("error", ""), str(r))
     check("no transcript leaked through (never spawned)", "transcript" not in r, str(r))
 
 
 def check_secret_redacted_even_when_echoed_back_later(mod) -> None:
-    print("regression: a secret value is scrubbed EVERYWHERE in the "
-          "transcript, not just on the line where it was sent -- this is "
-          "a real bug that was caught live, not a hypothetical")
+    print("a secret value is scrubbed everywhere in the transcript, not just "
+          "on the line where it was sent")
     os.environ["_TEST_ECHO_BACK_SECRET"] = "Jum@nji23Suck$2#"
     try:
         r = call(mod, {

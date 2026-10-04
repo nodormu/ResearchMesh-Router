@@ -25,10 +25,12 @@ Requires:  pip install pexpect
 
 import asyncio
 import base64
+import contextlib
 import html
 import json
 import os
 import re
+import signal
 import subprocess
 from pathlib import Path
 from urllib.parse import quote, quote_plus
@@ -230,6 +232,28 @@ def _resolve_reply(step: dict) -> tuple[str, bool, str | None]:
     return value, True, None
 
 
+def _pass_show(entry_name: str) -> subprocess.CompletedProcess:
+    """`pass show <name>` in its own process group. On timeout the whole group is
+    killed: `subprocess.run` would kill only `pass`, and the `gpg` it started
+    would outlive it."""
+    proc = subprocess.Popen(
+        ["pass", "show", entry_name],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=_SEND_SECRET_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.communicate(timeout=5)
+        raise
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+
 def resolve_secret(entry_name: str) -> tuple[str, str | None]:
     """Return (value, error) for a `pass` entry name. Shared by every tool that
     accepts a vault entry (`interactive_run` `send_secret`, `browser_fill`
@@ -244,13 +268,7 @@ def resolve_secret(entry_name: str) -> tuple[str, str | None]:
         return "", _select_entry_prompt()
 
     try:
-        result = subprocess.run(
-            ["pass", "show", entry_name],
-            capture_output=True,
-            text=True,
-            timeout=_SEND_SECRET_TIMEOUT,
-            check=False,
-        )
+        result = _pass_show(entry_name)
     except FileNotFoundError:
         return "", "`pass` is not installed (see the module docstring for setup)"
     except subprocess.TimeoutExpired:
