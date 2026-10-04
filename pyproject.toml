@@ -6,17 +6,9 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"   # tomllib (used by main.py) is stdlib only from 3.11
-# Every one of these is fully required by whatever tool it backs -- none of
-# them is dispensable. This array is flat, same as ResearchMesh/-Windows/-Mac,
-# not split into a separate extras group: an earlier version of this file DID
-# split it into a separate PEP 621 extras group, but that split
-# turned out to serve no actual purpose -- CI (.github/workflows/ci.yml)
-# installs its own explicit, narrower package list directly, bypassing this
-# file entirely in both its jobs, and neither README.md nor CLAUDE.md ever
-# documents or recommends `pip install .[tools]` as a real install path (the
-# only place that phrase existed was this file's own comment, which was
-# simply wrong about what the README says). Flattened to match the other 3
-# repos and remove genuinely dead structure, not just reworded around it.
+# Every dependency here is required by the tool it backs. The array is flat, as in
+# ResearchMesh/-Windows/-Mac. CI (.github/workflows/ci.yml) installs its own
+# narrower package list and does not use this file.
 dependencies = [
     "anthropic>=1,<2",
     "mcp[cli]>=2.0,<3",     # 2.0 is a breaking major — see requirements.txt
@@ -40,16 +32,14 @@ dependencies = [
                               # explicitly since these modules import it directly
     "piper-tts",              # speak — see requirements.txt for the full note
     "faster-whisper",         # listen — see requirements.txt for the full note
-    "ruff>=0.16",             # linter — added by explicit user request, see requirements.txt
-    "mypy>=2.0",              # type checker — used by this project (CI's third gate),
-                              # so it belongs here on the same reasoning as ruff above:
-                              # a real dependency of the project, not a CI-only extra.
-                              # See requirements.txt for the full note.
+    "ruff>=0.16",             # linter; see requirements.txt
+    "mypy>=2.0",              # type checker, a CI gate; see requirements.txt
 ]
 
-# `computer` and `document_convert` additionally need apt packages (python3-tk,
-# scrot, libreoffice, pandoc) and `browser_*` needs `playwright install
-# chromium`; none of those can be expressed here — see requirements.txt.
+# `computer`, `document_convert`, `screen_find`, `speak` and `listen` also need apt
+# packages (python3-tk, scrot, libreoffice, pandoc, tesseract-ocr, xvfb,
+# pulseaudio-utils), and `browser_*` needs `playwright install chromium`; none of
+# that can be expressed here. See requirements.txt.
 
 # `ruff check .` should come back clean — that is the bar for an edit here, the
 # same as in ResearchMesh. This section adds no rules; it only lists exemptions.
@@ -69,38 +59,29 @@ exclude = ["scripts"]
 
 [tool.ruff.lint]
 ignore = [
-    # Blanket `except Exception` is the architecture, not an oversight. It is
-    # rarer here than in ResearchMesh (there is no local tool that can crash the
-    # loop) but the remaining sites are load-bearing for the same reason: a
-    # worker on another machine can fail in any way at all, and every tool_use
-    # block owes the API a tool_result in the very next message. Letting an
-    # exception escape doesn't just break the turn, it poisons every later
-    # request in the session with a 400 about unresolved tool_use ids.
+    # Blanket `except Exception` is deliberate: a worker on another machine can
+    # fail in any way, and every tool_use block owes the API a tool_result in the
+    # next message. An exception that escapes poisons every later request in the
+    # session with a 400 about unresolved tool_use ids.
     "BLE001",
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# One blocking `open()` reading config.toml at the top of a standalone
-# diagnostic script. True by the letter of the rule, irrelevant in context:
-# there is no concurrent work to starve.
+# One blocking `open()` reads config.toml at the top of a standalone diagnostic
+# script; there is no concurrent work to starve.
 "mcp_client.py" = ["ASYNC230"]
 
 # `mypy .` should come back clean, the same bar as `ruff check .`.
 #
-# It earns its place for the same reason it does in ResearchMesh: the one
-# failure mode in this code is a dependency changing underneath it, and mypy
-# type-checks against the *installed* packages. core/tools.py reads snake_case
-# attributes off MCP models whose camelCase spellings survive as serialization
-# aliases — so an SDK downgrade produces a runtime AttributeError on the first
-# real call, which no import check reaches and which mypy catches in one run.
-#
-# Left at mypy's defaults: bodies of unannotated functions are not checked, so
-# this is a floor, not a straitjacket.
+# The failure mode it guards is a dependency changing underneath this code: mypy
+# type-checks against the *installed* packages, and core/tools.py reads snake_case
+# attributes off MCP models whose camelCase spellings survive only as
+# serialization aliases, so an SDK mismatch is a runtime AttributeError on the
+# first real call that no import check reaches. Left at mypy's defaults, which
+# skip the bodies of unannotated functions: a floor, not a straitjacket.
 [tool.mypy]
-# Same reasoning as [tool.ruff]'s own exclude above -- scripts/ is real on
-# this dev box but gitignored/never present in a fresh clone, so real CI
-# never type-checks it either.
+# scripts/ is gitignored and absent from a fresh clone, as in [tool.ruff]'s exclude.
 exclude = "^scripts/"
-# httpx2 is imported lazily inside the http transport and is legitimately absent
-# from a bare environment.
+# CI installs only the four core packages, so the local-tool backings are absent
+# there; a missing import is not an error.
 ignore_missing_imports = true

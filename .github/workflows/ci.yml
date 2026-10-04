@@ -23,11 +23,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.11 is the floor (tomllib in main.py). 3.14 is what this is developed
-        # on, and the newest matters because mypy checks against the
-        # *installed* packages, so a dependency that changes shape surfaces
-        # there first. 3.13 sits in the middle as a third data point rather
-        # than only ever testing the two ends of the supported range.
+        # 3.11 is the floor (tomllib in main.py). 3.14 is the development version
+        # and the newest; mypy checks against the *installed* packages, so a
+        # dependency that changes shape surfaces there first. 3.13 is the midpoint.
         python-version: ["3.11", "3.13", "3.14"]
 
     steps:
@@ -81,11 +79,8 @@ jobs:
           # Full history, not the default shallow clone -- the commit-message
           # scan below needs every commit, not just the tip, to be meaningful.
           fetch-depth: 0
-      # Complements the tracked-file check below: neither `git grep` on
-      # tracked files nor gitleaks' default mode scans commit MESSAGE text at
-      # all (confirmed live, 2026-09-25, after a real key ended up in a
-      # commit message rather than a file and sailed through both unnoticed).
-      # This closes that gap directly.
+      # Neither `git grep` on tracked files nor gitleaks' default mode scans
+      # commit message text. This step does.
       - name: No literal credentials in commit messages
         run: |
           set -euo pipefail
@@ -133,17 +128,12 @@ jobs:
           fi
           echo "no committed credentials found"
 
-  # General-purpose secret scanner, complementing (not replacing) the
-  # targeted regex checks above. Those check THIS app's own token_env/
-  # api_key_env indirection pattern specifically; this instead catches
-  # WELL-KNOWN provider-key formats (AWS, GitHub, Slack, Stripe, etc.)
-  # anywhere in the tree, which the checks above were never designed to
-  # look for. Verified live before adding: does NOT reliably catch an
-  # arbitrary custom self-hosted-service token (e.g. a GPU-box worker's own
-  # bearer token) with no recognized provider signature -- no regex-based
-  # tool does, so the checks above remain the real defense for THIS app's
-  # own config surfaces specifically. No license needed (free for personal
-  # accounts).
+  # General-purpose scanner for well-known provider key formats (AWS, GitHub,
+  # Slack, Stripe, ...) anywhere in the tree, complementing the targeted checks
+  # above. It does not reliably catch a custom token with no provider signature
+  # (e.g. a worker's own bearer token); no regex tool does, so the checks above
+  # remain the defense for this app's own config surfaces. Needs no license for
+  # personal accounts.
   gitleaks:
     runs-on: ubuntu-latest
     steps:

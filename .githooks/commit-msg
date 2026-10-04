@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
-# commit-msg hook: reject a commit if its MESSAGE (not just tracked files)
-# contains what looks like a real secret. Added 2026-09-25 after a live
-# incident: a commit message meant to say the literal text
-# "$ANTHROPIC_API_KEY" instead got shell-expanded into the real key value,
-# which then sat in public GitHub history undetected by every file-content
-# scanner (git grep in CI, gitleaks default mode) since neither of those
-# tools scans commit message text at all -- only this hook, and the
-# corresponding CI step, actually look here.
+# commit-msg hook: reject a commit whose MESSAGE contains what looks like a real
+# secret. File-content scanners (git grep in CI, gitleaks default mode) never
+# read commit message text, so only this hook and the matching CI step do. A
+# message written with an unquoted "$ANTHROPIC_API_KEY" in a shell command is
+# expanded into the real value before git sees it.
 set -euo pipefail
 msg_file="$1"
 
 fail=0
 
-# Known-format provider keys, checked directly -- fast, zero dependency,
-# always runs even if gitleaks isn't installed.
+# Known provider key formats, checked with grep so this runs without gitleaks.
 if grep -nIE 'sk-ant-(api03|admin01)-[A-Za-z0-9_-]{20,}' "$msg_file"; then
   echo "COMMIT REJECTED: commit message contains what looks like a real Anthropic API key." >&2
   fail=1
@@ -27,9 +23,8 @@ if grep -nIE 'gh[pousr]_[A-Za-z0-9]{20,}' "$msg_file"; then
   fail=1
 fi
 
-# Broader net: hand the message text to gitleaks itself (current version,
-# ~/.local/bin/gitleaks, not the stale apt one) if it's on PATH. Catches
-# other known provider formats the three hand-picked checks above don't.
+# Broader net: gitleaks, when on PATH, scans the message for other known provider
+# formats.
 if command -v gitleaks >/dev/null 2>&1; then
   if ! gitleaks detect --no-git --source "$msg_file" --no-banner 2>/tmp/gitleaks_commit_msg_check.log; then
     if grep -q "leaks found" /tmp/gitleaks_commit_msg_check.log 2>/dev/null || [ -s /tmp/gitleaks_commit_msg_check.log ]; then

@@ -4,88 +4,58 @@
 # the environment variable that holds its token (see README.md).
 
 [claude]
-# Anthropic models available to use/swap to via /model. This array is a
-# CACHE, not hand-typed — core/claude.py's refresh_claude_models() live-scans
-# Anthropic's own /v1/models roughly once a day (see model_scan_ttl_hours
-# below) and rewrites it here, one entry per model family (sonnet/opus/
-# haiku/...), newest release first — except sonnet is always placed first
-# when present, matching Anthropic's own documented default recommendation.
-# A new session always starts on the FIRST model in this list. Swap
-# mid-session with /model swap <name/index>; that swap is session-only
-# and affects only the ROUTER's own reasoning model, never a connected
-# worker's — it does not edit this file. Hand-editing this array still works
-# (e.g. to pin a specific dated snapshot) — it just gets overwritten on the
-# next scan once claude_models_checked_at goes stale.
+# Models for /model. This array is a cache: core/claude.py's
+# refresh_claude_models() scans Anthropic's /v1/models once model_scan_ttl_hours
+# has passed and rewrites it here, one entry per model family, newest first,
+# sonnet first when present. A new session starts on the first entry.
+# `/model swap <name/index>` changes only the router's own model, for the
+# session, and never edits this file. A hand edit (e.g. to pin a dated
+# snapshot) lasts until the next scan.
 claude_models = ["claude-sonnet-5", "claude-opus-5-5", "claude-fable-5-1", "claude-haiku-4-5-20251001"]
 
-# Set automatically by refresh_claude_models() whenever claude_models above
-# is refreshed from a live scan. Do not hand-edit except to force an
-# immediate rescan on the next startup by deleting this line entirely.
+# Written by refresh_claude_models() after each successful scan. Delete this line
+# to force a rescan at the next startup.
 # claude_models_checked_at = "2026-01-01T00:00:00+00:00"
 
-# How many hours a live scan result is trusted before refresh_claude_models()
-# re-scans /v1/models again. 24 is the default if this key is absent —
-# Anthropic doesn't ship new models more than roughly once a day, and a
-# smaller number just adds network calls to every other process start for
-# no practical benefit.
+# Hours a scan result is trusted before the next scan (default 24).
 model_scan_ttl_hours = 24
 claude_models_checked_at = "2026-09-26T13:20:35.638527+00:00"
 
 [bash]
-# Shell the `bash` tool runs commands through (subprocess.run's `executable=`
-# under shell=True). Absolute path or a bare name resolved via $PATH. Falls
-# back to /bin/bash if unset, blank, or unresolvable.
-#
-# Exists because Python's shell=True defaults to /bin/sh, which is dash (not
-# bash) on Ubuntu/Debian — silently breaking bash-only syntax ([[ ]],
-# process substitution, arrays) if left unpinned. No-op on distros where
-# /bin/sh is already bash (RHEL/Fedora/AlmaLinux).
-#
-# Override to whatever shell you actually want, e.g. "/usr/bin/zsh" or
-# "zsh". If it resolves to zsh, a prelude (core/claude_learned_schemas.py's
-# apply_shell_prelude) automatically restores bash-style word-splitting and
-# glob-nomatch behavior, so ordinary bash syntax stays safe — zsh's 1-based
-# array indices are the one remaining difference, left as-is rather than
-# patched (the option that would fix it, KSH_ARRAYS, has its own side
-# effects). Resolved once at process start — restart to pick up a change.
+# Shell for the local `bash` tool, `bash_session` and `interactive_run`: an
+# absolute path or a bare name resolved via $PATH. Unset, blank or unresolvable
+# falls back to /bin/bash. Python's shell=True alone would use /bin/sh, which is
+# dash on Ubuntu/Debian and breaks bash-only syntax ([[ ]], process
+# substitution, arrays). If it resolves to zsh, apply_shell_prelude() in
+# core/claude_learned_schemas.py restores bash-style word splitting and glob
+# no-match behavior; zsh's 1-based array indices remain a difference (KSH_ARRAYS
+# would fix them but changes more). Resolved once at start; restart to change.
 shell = "/bin/bash"
 
 [router]
-# How many workers may be busy at the same time.
-#
-# Tool calls are grouped by worker: the groups run concurrently, and calls
-# within one group run in order. That mirrors the workers themselves — a
-# ResearchMesh worker serialises its `delegate` calls behind a lock because it
-# has one mouse, one browser page and one IPython kernel — so this number is
-# effectively "how many machines at once", not "how many calls at once".
+# How many workers may be busy at once. Calls are grouped by worker: groups run
+# concurrently and calls within a group run in order, because a ResearchMesh
+# worker serialises `delegate` behind a lock (one mouse, one browser page, one
+# IPython kernel). So this is how many machines at once, not how many calls.
 max_parallel = 8
 
-# Default deadline for a single call to a worker, in seconds.
-#
-# 900 is not arbitrary and the default is not safe to keep: the MCP SDK's own
-# default read timeout is 300s, and a worker driving a desktop GUI routinely
-# runs longer than that. When it expires the work is already done on the far
-# side and simply lost. Override per worker below with `timeout_seconds`.
+# Default deadline for one call to a worker, in seconds. The MCP SDK's own read
+# timeout is 300s, and a worker driving a desktop GUI runs longer; when the
+# deadline expires the work is already done on the far side and lost. Override
+# per worker with `timeout_seconds`.
 timeout_seconds = 900
 
 [mcp]
-# Set enabled = false to skip every worker. The router has no tools of its own,
-# so with no workers it can only hold a conversation.
+# false skips every worker, leaving only the router's own local tools.
 enabled = false
 
-# The fleet. Every reachable worker connects and its tools are merged into the
-# single list Claude sees; one that fails prints a warning and is skipped, so a
-# machine being switched off doesn't stop the router.
+# The fleet. Every reachable worker connects and its tools join the single list
+# Claude sees; one that fails prints a warning and is skipped.
 #
-# Tool names are namespaced as `<name>__<tool>` before being declared, which is
-# what makes a fleet of identical ResearchMesh workers possible at all — three
-# workers all exposing `delegate` would otherwise be rejected outright with
-# `400 tools: Tool names must be unique`. Keep `name` short, and use only
-# letters, digits, `_` and `-`: anything else is substituted with `_` to satisfy
-# the API's tool-name rules, so `gpu box` and `gpu.box` would collide (not
-# `gpu-box`, which needs no substitution at all) — a collision like that gets
-# a numeric suffix rather than silently shadowing one worker's tool with the
-# other's.
+# Tool names are namespaced `<name>__<tool>`: three workers all exposing
+# `delegate` would otherwise be rejected with `400 tools: Tool names must be
+# unique`. Use only letters, digits, `_` and `-` in `name`; anything else becomes
+# `_`, so `gpu box` and `gpu.box` collide, and a collision gets a numeric suffix.
 #
 # Two entry shapes:
 #
@@ -104,26 +74,21 @@ enabled = false
 #   command          full argv as a list, e.g. ["python", "/path/mcp_server.py"]
 #   env              table of extra environment variables, if needed
 #
-# `description` is the field that makes the fleet navigable, and it is the one
-# thing you cannot skip. ResearchMesh's mcp_server.py hardcodes a single
-# description constant, so every worker in the fleet describes itself with
-# byte-identical text; namespacing gives them distinct *names* but nothing to
-# choose between. Write what is true of that machine specifically and would
-# change the routing decision — its OS and session type, what is installed, what
-# is plugged into it, what data lives on it, what it must not be used for.
+# Set `description` on every worker. ResearchMesh's mcp_server.py hardcodes one
+# description, so every worker describes itself identically. Write what is true
+# of that machine and would change a routing decision: OS and session type, what
+# is installed or attached, what data lives on it, what it must not be used for.
 #
-# Paths and URLs are expanded before use: `~`, `$USER`, `$HOME`, `${VAR}` in
-# `command`, `url` and the *values* of `env` are substituted from the
-# environment. `env`'s keys and `description` are left alone. An undefined
-# variable is left as written rather than becoming empty, so a typo shows up in
-# the startup warning instead of producing a silently wrong path.
+# `~`, `$USER`, `$HOME` and `${VAR}` in `command`, `url` and the *values* of
+# `env` are expanded from the environment. `env` keys and `description` are left
+# alone. An undefined variable is left as written, so a typo shows up in the
+# startup warning.
 #
-# Note the trailing slash on the URLs. Starlette 307-redirects `/mcp` to `/mcp/`
-# before the auth middleware runs, so the un-slashed form works but takes an
-# extra round trip on every request.
+# Keep the trailing slash on URLs: Starlette 307-redirects `/mcp` to `/mcp/`
+# before the auth middleware runs, costing an extra round trip per request.
 #
-# Every entry below is an example and is commented out, so a fresh clone starts
-# clean. Replace them with your own machines.
+# The workstation, gpu-box and scraper entries are commented-out examples;
+# `local` is live but inert while `enabled = false`.
 servers = [
 #  { name = "workstation",
 #    url = "http://192.168.2.20:8100/mcp/",
@@ -146,49 +111,31 @@ servers = [
 ]
 
 [embeddings]
-# There is no Anthropic-hosted embeddings endpoint — the documented path is
-# Voyage AI, a separate paid API. The `text_embeddings` tool exists so Claude
-# has vector embeddings available at all without adding that second bill:
-# uncomment `url` below and it calls whatever HTTP embedding server you
-# already run instead — the same private compute an Unreal Engine project's
-# own embedding settings might already point at, or any self-hosted server
-# speaking the common OpenAI-compatible `/v1/embeddings` shape
-# (text-embeddings-inference, llama.cpp's server, Ollama, vLLM, LM Studio, ...).
+# `text_embeddings` calls an HTTP embedding server you run or pay for; Anthropic
+# has no embeddings endpoint. Any server speaking the OpenAI-compatible
+# `/v1/embeddings` shape works (text-embeddings-inference, llama.cpp's server,
+# Ollama, vLLM, LM Studio, a paid provider). Read from disk on every call, so an
+# edit applies without a restart.
 #
-# Like everything else in this file, it's read fresh on every call — editing
-# this block (by hand or with the `config_edit` tool) and calling
-# `text_embeddings` again picks it up with no restart.
+#   url             the server's endpoint. Required; until it is set the tool
+#                   returns an error naming this key.
+#   model           model name forwarded in the request body. Most single-model
+#                   servers ignore it. Overridable per call.
+#   request_format  "openai" (default) posts {"input": [...], "model": ...} and
+#                   expects {"data": [{"embedding": [...]}, ...]}. "simple" posts
+#                   {"text": [...]}. A response of {"embedding": [...]} or
+#                   {"embeddings": [[...]]} is accepted with either format.
+#   api_key_env     name of the environment variable holding a bearer token,
+#                   like `token_env` in an `[mcp].servers` entry. Never put the
+#                   token here; this file is committed.
+#   timeout         request timeout in seconds (default 30).
 #
-#   url             your embedding server's endpoint. Required — the tool is
-#                   still declared to Claude either way, but returns an error
-#                   telling you to set this until you do.
-#   model           model name forwarded in the request body, not required. Most
-#                   single-model private servers ignore it; leave it unset if
-#                   yours does. Overridable per call.
-#   request_format  "openai" (default) posts {"input": [...], "model": ...}
-#                   and expects {"data": [{"embedding": [...]}, ...]} back —
-#                   the shape most self-hosted servers speak. "simple" posts
-#                   {"text": [...]} instead, for a bespoke server that wants
-#                   that shape. Either way, a response of
-#                   {"embedding": [...]} or {"embeddings": [[...]]} is also
-#                   accepted regardless of which format was sent.
-#   api_key_env     not required — name of the environment variable holding a
-#                   bearer token for this server, the same `token_env`
-#                   pattern an `[mcp].servers` entry uses. Never put the
-#                   token itself here; this file is committed.
-#   timeout         request timeout in seconds, not required (default 30).
-#
-# Nothing above is specific to self-hosted compute — it's the same generic
-# OpenAI-compatible /v1/embeddings shape, so a paid provider works with zero
-# code changes too. Voyage AI is one example:
-#
+# Voyage AI:
 #   url = "https://api.voyageai.com/v1/embeddings"
-#   model = "voyage-2"                  # or voyage-3.5, voyage-large-2, ...
-#   api_key_env = "VOYAGE_API_KEY"      # set VOYAGE_API_KEY in your shell,
-#                                        # never here — this file is committed
+#   model = "voyage-2"
+#   api_key_env = "VOYAGE_API_KEY"
 #
-# The example below instead points at a self-hosted server on the LAN — swap
-# in whatever you actually run:
+# A server on the LAN:
 # url = "http://192.168.2.12:8080/v1/embeddings"
 # model = "nomic-embed"
 # request_format = "openai"
@@ -196,60 +143,28 @@ servers = [
 # timeout = 30
 
 [vision]
-# Same self-hosting motivation as [embeddings] above, for a different
-# modality: the `vision_query` tool asks a question about an image via your
-# own OpenAI-compatible vision-capable chat server (llama.cpp's server,
-# vLLM, LM Studio, ...) instead of sending the image to Anthropic's API.
+# `vision_query` asks about an image through an OpenAI-compatible vision chat
+# server you run (llama.cpp's server, vLLM, LM Studio, ...) instead of sending
+# the image to Anthropic. Read from disk on every call.
 #
-# Like [embeddings], this is read fresh on every call — editing this block
-# and calling `vision_query` again picks it up with no restart.
+# There is no fallback to Claude's own vision. If `url` is unset or the request
+# fails, the tool returns {"status": "local_unavailable", ...} and stops; using
+# Claude's vision on the same image is a separate decision made in conversation.
 #
-# IMPORTANT — no automatic fallback to Claude's own vision lives in this
-# tool. If url is unset here, or the request to it fails (server down,
-# unreachable, etc.), vision_query returns a plain
-# {"status": "local_unavailable", ...} result and stops — it does NOT
-# silently retry via Claude. Using Claude's own vision on the same image
-# after that is a deliberate, separate decision made in conversation (with
-# your explicit go-ahead), never automatic — see core/vision.py's module
-# docstring for the full reasoning.
+#   url          the server's chat endpoint, e.g.
+#                http://host:port/v1/chat/completions. Required; until it is set
+#                the tool returns local_unavailable.
+#   model        model name forwarded in the request body; it must match the
+#                server's routing name, not necessarily the file name.
+#                Overridable per call.
+#   max_tokens   max output tokens (default 4000). A reasoning vision model
+#                spends part of the budget on invisible reasoning_content; a low
+#                value can use all of it and return an empty or truncated answer
+#                with "finish_reason": "length". Overridable per call.
+#   timeout      request timeout in seconds (default 180).
+#   api_key_env  as for [embeddings].
 #
-#   url          your vision server's OpenAI-compatible chat endpoint,
-#                e.g. http://host:port/v1/chat/completions. Required — the
-#                tool is still declared to Claude either way, but returns
-#                a local_unavailable status telling you to set this until
-#                you do.
-#   model        model name forwarded in the request body — must match
-#                your server's routing/alias name (e.g. a models.ini
-#                bracket name in llama.cpp router mode), not necessarily
-#                the .gguf filename. Overridable per call.
-#   max_tokens   default max output tokens (default 4000 if unset here).
-#                Confirmed empirically necessary at this magnitude for
-#                GLM-4.6V-Flash specifically: it's a reasoning model that
-#                spends part of the budget on invisible reasoning_content
-#                before writing the visible answer — at low values
-#                (tested: 400-500) it can burn the ENTIRE budget on
-#                reasoning and return an empty or mid-sentence-truncated
-#                answer with no error, only a "finish_reason": "length" in
-#                the raw response to tell you why. If you swap in a
-#                non-reasoning vision model later, a much lower value would
-#                likely be fine — this default is tuned for THIS model,
-#                not a universal constant. Overridable per call.
-#   timeout      request timeout in seconds (default 180 if unset here).
-#                Real test data point: max_tokens=4000 on a moderately
-#                complex image used 1536 tokens and took 43s on the
-#                7800 XT this was tuned against (~35.7 tok/s combined
-#                reasoning+generation) — a call that actually used the
-#                FULL 4000-token budget would extrapolate to roughly
-#                110s, so 180s leaves real headroom rather than cutting it
-#                close. Adjust freely if your hardware/model differs.
-#   api_key_env  not required — same bearer-token env-var pattern as
-#                [embeddings].api_key_env. Never put the token itself
-#                here; this file is committed.
-#
-# The example below points at the same self-hosted llama.cpp router
-# [embeddings] above already uses, now also serving a vision-capable model
-# alongside the embedding one (llama.cpp's own router/--models-preset mode
-# runs both behind one port) — swap in whatever you actually run:
+# Example, for a llama.cpp router that also serves the embedding model above:
 # url = "http://192.168.2.12:8080/v1/chat/completions"
 # model = "glm-4.6v-flash"
 # max_tokens = 4000
@@ -257,82 +172,43 @@ servers = [
 # api_key_env = "VISION_API_KEY"
 
 [speak]
-# Local text-to-speech via Piper (github.com/rhasspy/piper — the PyPI
-# package is `piper-tts`, NOT `sudo apt install piper`, which installs an
-# unrelated GTK app for configuring gaming mice, same name by coincidence).
-# Same self-hosting motivation as [vision]/[embeddings] above: keeps
-# synthesized speech entirely local, no cloud TTS API involved. Ported from
-# ResearchMesh — see that repo's speak_listen_tool_integration_plan.md and
-# camera_mic_hardware_testing_plan.md (in ITS OWN /memories, not this
-# repo's) for the full build/test history behind this tool.
+# `speak`: local text-to-speech through Piper (PyPI `piper-tts`, not
+# `sudo apt install piper`, which installs an unrelated GTK app for configuring
+# gaming mice). No cloud TTS API. Read from disk on every call.
 #
-# Like everything else in this file, read fresh on every call — editing
-# this block and calling `speak` again picks it up with no restart.
+#   enabled       default true. A hard off-switch checked before voice_model, so
+#                 a disabled tool touches no filesystem and spawns no process.
+#   voice_model   path to a Piper .onnx voice file with a matching <path>.json
+#                 next to it. Required; until it is set the tool returns
+#                 not_configured.
+#   sink          PipeWire sink name (`pactl list sinks short`); the system
+#                 default if unset.
+#   timeout       seconds for synthesis and for playback, each (default 30).
 #
-#   enabled       true/false, default true. A hard off-switch, independent
-#                 of whether voice_model below is actually set up — e.g.
-#                 mute speech output for a while without losing/unsetting
-#                 the voice_model path. Checked BEFORE voice_model, so a
-#                 disabled tool never touches the filesystem or spawns a
-#                 subprocess at all.
-#   voice_model   path to a Piper .onnx voice file. Required — the tool is
-#                 still declared to Claude either way, but returns a
-#                 not_configured status telling you to set this until you
-#                 do. A matching <path>.json config file must sit next to
-#                 it (Piper's own convention, not something we control).
-#   sink          PipeWire sink name to play through (`pactl list sinks
-#                 short` to find it). Falls back to the system default
-#                 sink if unset.
-#   timeout       subprocess timeout in seconds, for synthesis AND playback
-#                 each (default 30 if unset here).
-#
-# ⚠️ FIRST-TIME SETUP: don't hand-guess `voice_model`/`sink` below — leave
-# `enabled = false` (or this whole block commented, as shipped) for now,
-# start a normal CLI session, and just ask Claude directly — e.g. "list my
-# PipeWire sinks and fill in [speak] in config.toml for me." Claude already
-# has full bash access and can run `pactl list sinks short`, confirm which
-# one is your target speaker/headset, and edit this file's values (via the
-# config_edit tool, so these comments survive) — then flip `enabled` to
-# true yourself once it's filled in correctly. The example below is the
-# machine ResearchMesh itself was built/tested on (a "Razer USB Sound
-# Card") — illustrative only, not this repo's own hardware.
+# To fill these in, ask Claude: it can run `pactl list sinks short` and edit this
+# file with `config_edit`, which keeps the comments. The values below are
+# examples for one machine, not defaults.
 # enabled = true
 # voice_model = "/home/invent/models/piper_voices/en_US-lessac-medium.onnx"
 # sink = "alsa_output.usb-Razer_Razer_USB_Sound_Card_00000000-00.analog-stereo"
 # timeout = 120
 
 [listen]
-# Local speech-to-text via faster-whisper (CTranslate2, CPU-only —
-# faster-whisper's CTranslate2 backend has no GPU path on this project's
-# reference hardware regardless of ROCm/ CUDA availability elsewhere; see
-# ResearchMesh's camera_mic_hardware_testing_plan.md for why). Same
-# self-hosting motivation as [speak]/[vision]/[embeddings] above.
+# `listen`: local speech-to-text through faster-whisper (CTranslate2, on CPU).
+# Read from disk on every call.
 #
-#   enabled       true/false. Same hard off-switch shape as [speak].enabled,
-#                 checked before `device`, so a disabled tool never opens
-#                 the microphone at all.
-#   device        PipeWire source name to record from (`pactl list sources
-#                 short` to find it). Required — the tool is still declared
-#                 to Claude either way, but returns a not_configured status
-#                 until this is set.
-#   model_size    faster-whisper model size (tiny/base/small/medium/
-#                 large-v3, ...). Default "base" if unset — proven on
-#                 ResearchMesh to correctly transcribe real, natural speech
-#                 on CPU alone.
-#   default_duration_seconds   how long to record if the caller doesn't
-#                 specify duration_seconds (default 8 if unset here).
-#   max_duration_seconds   safety cap on duration_seconds however it was
-#                 supplied (default 30 if unset here).
+#   enabled       default true; checked before `device`, so a disabled tool never
+#                 opens the microphone.
+#   device        PipeWire source name (`pactl list sources short`). Required;
+#                 until it is set the tool returns not_configured.
+#   model_size    faster-whisper model size: tiny, base, small, medium or
+#                 large-v3 (default base).
+#   default_duration_seconds   recording length when the caller gives none (8).
+#   max_duration_seconds       cap on any requested duration (30).
 #
-# ⚠️ FIRST-TIME SETUP: same advice as [speak] above — don't hand-guess
-# `device` below, leave `enabled = false` (or this whole block commented,
-# as shipped) for now, start a normal CLI session, and ask Claude directly
-# — e.g. "list my PipeWire sources and fill in [listen] in config.toml for
-# me." Claude can run `pactl list sources short`, confirm which one is your
-# target mic/headset, and edit this file's values (via config_edit) — then
-# flip `enabled` to true yourself once it's filled in correctly. The
-# example below is illustrative only, from the same reference machine as
-# [speak] above, not this repo's own hardware.
+# To fill these in, ask Claude: it can run `pactl list sources short` and edit
+# this file with `config_edit`. The values below are examples for one machine,
+# not defaults.
 # enabled = true
 # device = "alsa_input.usb-Razer_Razer_USB_Sound_Card_00000000-00.analog-stereo"
 # model_size = "base"
