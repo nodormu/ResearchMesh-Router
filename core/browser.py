@@ -8,9 +8,11 @@ keep responses out of firehose territory.
 Requires:  pip install playwright  &&  playwright install chromium
 """
 
+import asyncio
 from urllib.parse import urljoin
 
 from core.output import clip
+from core.processes import _redact, resolve_secret
 
 TOOLS = [
     {
@@ -30,7 +32,19 @@ TOOLS = [
                 "url": {
                     "type": "string",
                     "description": "Absolute URL to open, including http:// or https://.",
-                }
+                },
+                "headed": {
+                    "type": "boolean",
+                    "description": (
+                        "true opens a visible browser window on the user's desktop; "
+                        "false is headless. Use true when the user asks to see or "
+                        "watch the browser, or when the page needs them to act in "
+                        "it (a one-time code, a CAPTCHA); otherwise leave it unset to "
+                        "keep the current mode (headless at start). Changing the mode "
+                        "restarts the browser, which drops the open page, cookies and "
+                        "logins, so set it on the first navigate of a task."
+                    ),
+                },
             },
             "required": ["url"],
         },
@@ -77,8 +91,11 @@ TOOLS = [
     {
         "name": "browser_fill",
         "description": (
-            "Fill a form field (input or textarea) matching a CSS selector with the "
-            "given value. Follow with browser_click to submit."
+            "Fill a form field (input or textarea) matching a CSS selector. Give "
+            "exactly one of `value` (literal text; never use it for a password or "
+            "token) or `value_secret` (the NAME of a `pass` vault entry; the real "
+            "value is decrypted locally, typed into the field, and never appears in "
+            "this call or its result). Follow with browser_click to submit."
         ),
         "input_schema": {
             "type": "object",
@@ -88,8 +105,15 @@ TOOLS = [
                     "description": "CSS selector of the input/textarea.",
                 },
                 "value": {"type": "string", "description": "Text to enter."},
+                "value_secret": {
+                    "type": "string",
+                    "description": (
+                        "Name of a `pass` entry to type into the field. Use \"?\" to "
+                        "get the list of entries. The user names the exact entry."
+                    ),
+                },
             },
-            "required": ["selector", "value"],
+            "required": ["selector"],
         },
     },
     {
@@ -136,10 +160,19 @@ _MAX_LINKS = 50
 _playwright = None
 _browser = None
 _page = None
+# Values typed from the vault, scrubbed from everything this module returns.
+_filled_secrets: set[str] = set()
+_headless = True
 
 
 def handles(name: str) -> bool:
     return name in _TOOL_NAMES
+
+
+def _scrub(text: str) -> str:
+    """Scrub vault values from page-derived text. Runs BEFORE clipping: a clip
+    can cut a secret in half, and a half-secret no longer matches."""
+    return _redact(text, list(_filled_secrets))
 
 
 def _trim(text: str) -> str:
@@ -163,25 +196,46 @@ def _absolute(page_url: str, href: str | None) -> str:
 async def _page_report(page, prefix: str) -> str:
     """Title, URL, and trimmed body text — the URL is here so nothing needs a
     separate 'where am I' tool."""
-    title = await page.title()
-    body = await page.inner_text("body")
-    return f"{prefix}: {title}\nURL: {page.url}\n\n{_trim(body)}"
+    title = _scrub(await page.title())
+    body = _scrub(await page.inner_text("body"))
+    return f"{prefix}: {title}\nURL: {_scrub(page.url)}\n\n{_trim(body)}"
 
 
-async def _ensure_page():
-    global _playwright, _browser, _page
+async def _ensure_page(headless: bool | None = None):
+    """The live page. `headless` None keeps the current mode; a different mode
+    restarts the browser, which drops the open page, cookies and logins."""
+    global _playwright, _browser, _page, _headless
+    if _page is not None and headless is not None and headless != _headless:
+        await shutdown()
     if _page is None:
         from playwright.async_api import async_playwright
 
+        mode = _headless if headless is None else headless
         _playwright = await async_playwright().start()
-        _browser = await _playwright.chromium.launch(headless=True)
+        try:
+            _browser = await _playwright.chromium.launch(headless=mode)
+        except Exception:
+            await _playwright.stop()
+            _playwright = None
+            raise
         _page = await _browser.new_page()
+        _headless = mode
     return _page
 
 
 async def execute(name: str, tool_input: dict) -> str:
+    result = await _dispatch(name, tool_input)
+    return _redact(result, list(_filled_secrets))
+
+
+async def _dispatch(name: str, tool_input: dict) -> str:
     try:
-        page = await _ensure_page()
+        headless = None
+        if name == "browser_navigate" and tool_input.get("headed") is not None:
+            if not isinstance(tool_input["headed"], bool):
+                return "Error: `headed` must be true or false"
+            headless = not tool_input["headed"]
+        page = await _ensure_page(headless)
 
         if name == "browser_navigate":
             await page.goto(tool_input["url"], wait_until="domcontentloaded")
@@ -199,7 +253,7 @@ async def execute(name: str, tool_input: dict) -> str:
             if not out:
                 return f"No elements matched selector {selector!r}"
             # clip, not _trim: _trim would flatten these lines into one.
-            return clip("\n".join(out), _MAX_TEXT)
+            return clip(_scrub("\n".join(out)), _MAX_TEXT)
 
         if name == "browser_click":
             await page.click(tool_input["selector"])
@@ -207,8 +261,21 @@ async def execute(name: str, tool_input: dict) -> str:
             return await _page_report(page, "Clicked. Now on")
 
         if name == "browser_fill":
-            await page.fill(tool_input["selector"], tool_input["value"])
-            return f"Filled {tool_input['selector']!r}"
+            selector = tool_input["selector"]
+            if ("value" in tool_input) == ("value_secret" in tool_input):
+                return "Error: browser_fill needs exactly one of `value` or `value_secret`"
+            if "value_secret" in tool_input:
+                entry = str(tool_input["value_secret"])
+                secret, error = await asyncio.to_thread(resolve_secret, entry)
+                if error:
+                    return error
+                if not secret:
+                    return f"Error: vault entry {entry!r} returned an empty value"
+                _filled_secrets.add(secret)
+                await page.fill(selector, secret)
+                return f"Filled {selector!r} from vault entry {entry!r} (value not shown)"
+            await page.fill(selector, tool_input["value"])
+            return f"Filled {selector!r}"
 
         if name == "browser_links":
             needle = (tool_input.get("contains") or "").lower()
@@ -225,7 +292,7 @@ async def execute(name: str, tool_input: dict) -> str:
             if not out:
                 where = f" matching {needle!r}" if needle else ""
                 return f"No links{where} on {page.url}"
-            return clip(f"Links on {page.url}:\n" + "\n".join(out), _MAX_TEXT)
+            return clip(_scrub(f"Links on {page.url}:\n" + "\n".join(out)), _MAX_TEXT)
 
         if name == "browser_back":
             if await page.go_back(wait_until="domcontentloaded") is None:
@@ -240,9 +307,11 @@ async def execute(name: str, tool_input: dict) -> str:
 
 async def shutdown():
     """Close the headless browser. Safe to call even if never launched."""
-    global _playwright, _browser, _page
+    global _playwright, _browser, _page, _headless
     if _browser is not None:
         await _browser.close()
     if _playwright is not None:
         await _playwright.stop()
     _playwright = _browser = _page = None
+    _headless = True
+    _filled_secrets.clear()

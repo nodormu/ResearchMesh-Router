@@ -54,10 +54,14 @@ Requires:  pip install pexpect
 """
 
 import asyncio
+import base64
+import html
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
+from urllib.parse import quote, quote_plus
 
 from core.claude_learned_schemas import SHELL_EXECUTABLE, apply_shell_prelude
 from core.output import clip
@@ -206,16 +210,9 @@ _DEFAULT_TIMEOUT = 30
 # of a real test run actually waiting out the production value.
 _SEND_SECRET_TIMEOUT = 30
 
-# Entry names that have already been explicitly presented AND re-referenced
-# once, for the life of this process — see `_resolve_reply`'s own docstring
-# for the incident this closes: a real live session skipped straight to
-# `"send_secret": "sudo_admin"` on the FIRST attempt, without ever showing
-# the "please select the cred name I need to use:" prompt first, because
-# nothing forced it to — the "?" sentinel only helps if the caller chooses
-# to use it, and this one didn't, even though "sudo_admin" was the only
-# entry that existed. A module-level set, not a function default, because
-# it has to persist across separate `_run()` calls within the same running
-# process to mean anything.
+# Vault entry names the user has typed in their own messages this session
+# (see `note_user_message`). Only these can be decrypted. Module-level so it
+# persists across separate tool calls in the same process.
 _confirmed_secret_entries: set[str] = set()
 
 
@@ -270,17 +267,24 @@ def _resolve_reply(step: dict) -> tuple[str, bool, str | None]:
             return "", False, f"environment variable {var_name!r} is not set"
         return value, True, None
 
-    entry_name = str(step["send_secret"])
+    value, error = resolve_secret(str(step["send_secret"]))
+    if error:
+        return "", False, error
+    return value, True, None
+
+
+def resolve_secret(entry_name: str) -> tuple[str, str | None]:
+    """Return (value, error) for a `pass` entry name. Shared by every tool that
+    accepts a vault entry (`interactive_run` `send_secret`, `browser_fill`
+    `value_secret`), so they share one name check and one decrypt path.
+
+    Decrypts only an entry the user typed in one of their own messages this
+    session (`note_user_message`). Any other name, or "?", returns the
+    selection prompt as the error and decrypts nothing; naming the entry
+    again from the model side does not change that.
+    """
     if entry_name == "?" or entry_name not in _confirmed_secret_entries:
-        # First reference to this exact name (or an explicit "?") — refuse
-        # to use it yet, REGARDLESS of whether it's real, correct, or the
-        # only entry that exists. Recording it here means the NEXT call
-        # that names this same entry is treated as the confirmed one — so
-        # a real task still only takes two calls total (present, then use),
-        # not a repeated prompt every single time the same entry comes up
-        # later in the same session.
-        _confirmed_secret_entries.add(entry_name)
-        return "", False, _select_entry_prompt()
+        return "", _select_entry_prompt()
 
     try:
         result = subprocess.run(
@@ -291,9 +295,9 @@ def _resolve_reply(step: dict) -> tuple[str, bool, str | None]:
             check=False,
         )
     except FileNotFoundError:
-        return "", False, "`pass` is not installed (see the module docstring for setup)"
+        return "", "`pass` is not installed (see the module docstring for setup)"
     except subprocess.TimeoutExpired:
-        return "", False, (
+        return "", (
             f"`pass show {entry_name!r}` did not return within "
             f"{_SEND_SECRET_TIMEOUT}s — likely waiting on a GPG passphrase "
             "prompt with no terminal here to answer it. Unlock the key "
@@ -303,9 +307,32 @@ def _resolve_reply(step: dict) -> tuple[str, bool, str | None]:
         )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
-        return "", False, f"`pass show {entry_name!r}` failed: {detail}{_available_entries_hint()}"
+        return "", f"`pass show {entry_name!r}` failed: {detail}{_available_entries_hint()}"
     first_line = result.stdout.splitlines()[0] if result.stdout else ""
-    return first_line, True, None
+    return first_line, None
+
+
+def _store_dir() -> Path:
+    return Path(os.environ.get("PASSWORD_STORE_DIR", "~/.password-store")).expanduser()
+
+
+def _store_entries(store_dir: Path) -> list[str]:
+    """Entry names in the store, read from the `*.gpg` filenames. Nothing is
+    decrypted."""
+    if not store_dir.is_dir():
+        return []
+    return sorted(
+        str(p.relative_to(store_dir))[: -len(".gpg")]
+        for p in store_dir.rglob("*.gpg")
+    )
+
+
+def note_user_message(text: str) -> None:
+    """Record every vault entry whose name appears in `text`. Called with the
+    user's own message only, so a name the model picked cannot confirm itself."""
+    for name in _store_entries(_store_dir()):
+        if re.search(rf"(?<![\w/-]){re.escape(name)}(?![\w/-])", text):
+            _confirmed_secret_entries.add(name)
 
 
 def _select_entry_prompt() -> str:
@@ -331,13 +358,10 @@ def _select_entry_prompt() -> str:
     actually needs. No decryption happens here — `.gpg` filenames are read
     directly off the filesystem, never opened.
     """
-    store_dir = Path(os.environ.get("PASSWORD_STORE_DIR", "~/.password-store")).expanduser()
+    store_dir = _store_dir()
     if not store_dir.is_dir():
         return f"no password store found at {store_dir} — nothing to select"
-    entries = sorted(
-        str(p.relative_to(store_dir))[: -len(".gpg")]
-        for p in store_dir.rglob("*.gpg")
-    )
+    entries = _store_entries(store_dir)
     if not entries:
         return "the password store is empty — nothing to select"
     return "please select the cred name I need to use:\n" + "\n".join(entries)
@@ -371,27 +395,62 @@ def _available_entries_hint() -> str:
     return f"\n\nEntries actually in the vault:\n{result.stdout.strip()}"
 
 
-def _redact(transcript: str, secret_values: list[str]) -> str:
-    """Replace every occurrence of every value in `secret_values` anywhere
-    in `transcript` with `***` — not just the one line where a step
-    actually sent it.
+def _b64_fragments(raw: bytes, encode) -> set[str]:
+    """The base64 characters that depend only on `raw`'s bytes, at each of the
+    three alignments `raw` can take inside a longer string (`user:` + secret in
+    a Basic-auth header lands at an arbitrary offset). Characters that also
+    depend on a neighbouring byte are left out, so every fragment matches
+    wherever the secret sits."""
+    out = set()
+    for k in range(3):
+        enc = encode(b"\x00" * k + raw).decode().rstrip("=")
+        out.add(enc[-(-8 * k // 6) : (8 * (k + len(raw))) // 6])
+    return out
 
-    This is the fix for a real, live-caught bug, not a defensive-only
-    measure: the previous design only ever substituted "***" at the exact
-    call site that SENT a secret reply, which correctly hid it from that one
-    line but did nothing about the child process printing the same value
-    back out on its OWN, later, as unrelated output (confirmed live: a
-    prompt/echo test script — `read -s -p ...; echo "GOT:[$val]"` — put a
-    real `pass`-sourced secret in plain text into the returned transcript,
-    on the `echo` line, which this function's call site never touched
-    before). Scrubbing the complete, final transcript for every known
-    secret value, wherever it appears, closes that gap regardless of why or
-    how the value ended up repeated. Empty values are skipped — replacing
-    "" would insert `***` between every character.
+
+def _secret_forms(value: str) -> set[str]:
+    """`value` plus the encodings a program or page commonly echoes it in:
+    percent-encoded (both hex cases), form-encoded, HTML-escaped, JSON-escaped,
+    hex, and base64 (standard, URL-safe, padded or not, at any alignment).
+    Derived forms shorter than 6 characters are dropped: they would match
+    ordinary text."""
+    if not value:
+        return set()
+    raw = value.encode()
+    forms = {
+        quote(value, safe=""),
+        quote(value),
+        quote_plus(value),
+        html.escape(value),
+        html.escape(value, quote=False),
+        json.dumps(value)[1:-1],
+        json.dumps(value, ensure_ascii=False)[1:-1],
+        raw.hex(),
+        base64.b64encode(raw).decode(),
+        base64.urlsafe_b64encode(raw).decode(),
+    }
+    forms |= {f.rstrip("=") for f in forms}
+    forms |= {re.sub(r"%[0-9A-F]{2}", lambda m: m.group().lower(), f) for f in forms}
+    if len(value) >= 8:
+        forms |= _b64_fragments(raw, base64.b64encode)
+        forms |= _b64_fragments(raw, base64.urlsafe_b64encode)
+    return {f for f in forms if len(f) >= 6} | {value}
+
+
+def _redact(transcript: str, secret_values: list[str]) -> str:
+    """Replace every occurrence of every value in `secret_values`, and of each
+    encoded form from `_secret_forms`, anywhere in `transcript` with `***`.
+
+    Scrubbing the complete text, not just the line where a step sent a secret,
+    covers a child process or page that repeats the value on its own later.
+    Longest forms go first so a long form is never left half-replaced by a
+    shorter one nested inside it. Empty values are skipped.
     """
+    forms: set[str] = set()
     for value in set(secret_values):
-        if value:
-            transcript = transcript.replace(value, "***")
+        forms |= _secret_forms(value)
+    for form in sorted(forms, key=len, reverse=True):
+        transcript = transcript.replace(form, "***")
     return transcript
 
 

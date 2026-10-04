@@ -265,40 +265,49 @@ def check_secret_redacted_even_when_echoed_back_later(mod) -> None:
 
 
 def check_first_reference_always_forces_selection(mod) -> None:
-    print("send_secret: a DIRECT, CORRECT, real entry name is still refused "
-          "on its first-ever reference -- reproduces the actual live "
-          "incident (the model went straight to the only entry that "
-          "existed, on the first try, with no '?' involved at all)")
+    print("send_secret: an entry decrypts only after the USER typed its name -- "
+          "a correct, real name chosen by the model is refused, however many "
+          "times it is repeated (reproduces the live incident where the model "
+          "went straight to the only entry that existed)")
     # _select_entry_prompt() reads $PASSWORD_STORE_DIR directly, independent
     # of the faked `pass` binary _FakePassOnPath sets up -- give it its own
     # controlled store so this test doesn't depend on whatever vault state
     # happens to exist on the machine actually running it.
     store = tempfile.mkdtemp()
     old_dir = os.environ.get("PASSWORD_STORE_DIR")
+    mod._confirmed_secret_entries.discard("fresh-unconfirmed-entry")
     try:
         open(os.path.join(store, "fresh-unconfirmed-entry.gpg"), "w").close()
         os.environ["PASSWORD_STORE_DIR"] = store
 
+        step = {"expect": "Enter: ", "send_secret": "fresh-unconfirmed-entry"}
         with _FakePassOnPath():
-            r1 = call(mod, {
-                "command": PROMPT_CMD,
-                "steps": [{"expect": "Enter: ", "send_secret": "fresh-unconfirmed-entry"}],
-            })
-        check("first reference is refused, not used, even though it's a real correct name",
+            r1 = call(mod, {"command": PROMPT_CMD, "steps": [step]})
+            r1b = call(mod, {"command": PROMPT_CMD, "steps": [step]})
+        check("an untyped name is refused, though it is a real correct name",
               "error" in r1, str(r1))
         check("refusal is the exact same selection prompt \"?\" produces",
               "please select the cred name I need to use:" in r1.get("error", ""), str(r1))
         check("refusal names the real entry, from the real store",
               "fresh-unconfirmed-entry" in r1.get("error", ""), str(r1))
-        check("no transcript leaked through on the refused first attempt",
+        check("no transcript leaked through on the refused attempt",
               "transcript" not in r1, str(r1))
+        check("repeating the same name is still refused",
+              "please select the cred name I need to use:" in r1b.get("error", ""), str(r1b))
 
+        mod.note_user_message("use fresh-unconfirmed-entry-2 for this")
+        with _FakePassOnPath():
+            r_near = call(mod, {"command": PROMPT_CMD, "steps": [step]})
+        check("a message containing only a longer name does not confirm it",
+              "error" in r_near, str(r_near))
+
+        mod.note_user_message("ok, fresh-unconfirmed-entry")
         with _FakePassOnPath():
             r2 = call(mod, {
                 "command": match_cmd("fake-secret-value-9k2m"),
-                "steps": [{"expect": "Enter: ", "send_secret": "fresh-unconfirmed-entry"}],
+                "steps": [step],
             })
-        check("SAME name, second reference, now proceeds for real",
+        check("after the user types the name it proceeds",
               "error" not in r2, str(r2))
         check("and actually works correctly once confirmed",
               "GOT:MATCH" in r2.get("transcript", ""), str(r2))

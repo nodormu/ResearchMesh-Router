@@ -679,25 +679,37 @@ worker MCP tools**.
   `check_secret_redacted_even_when_echoed_back_later` reproduces that exact
   scenario as a permanent regression check.
 
-  `send_secret`'s entry-name resolution is deliberately NOT "trust whatever
-  name the model gives it," for a second, separate reason found live: a real
-  session skipped straight to `send_secret: "sudo_admin"` on its first-ever
-  attempt — correctly guessing the only entry that existed — with no
-  confirmation step at all, because nothing forced one. `_resolve_reply()`
-  now refuses ANY entry name (a real one, `"?"`, anything) the first time
-  it's referenced in the running process — tracked in the module-level
-  `_confirmed_secret_entries` set — and returns a fixed, code-generated
-  prompt (`_select_entry_prompt()`) built from the vault's real contents:
-  `"please select the cred name I need to use:"` plus every real entry. Only
-  a second reference to that same name proceeds. This is enforced in code
-  specifically because the equivalent instruction in `SYSTEM_PROMPT` alone
-  was tried first and was not reliably followed across otherwise-identical
-  live sessions — one call correctly refused a bare password ask, the very
-  next call (same code, same schema) skipped straight to using the sole
-  vault entry with no prompt at all. Known limitation, not papered over:
-  this is process-lifetime state, not a verified human response — nothing
-  stops multiple tool calls within one model turn from "confirming" an entry
-  against each other before any text reaches the user.
+  `send_secret`'s entry name is not trusted from the model. `resolve_secret()`
+  decrypts only an entry whose name the user typed in one of their own
+  messages this session: `Chat.run()` passes each user message to
+  `note_user_message()`, which records every vault entry named in it (exact
+  name, not a substring) in `_confirmed_secret_entries`. Any other name, or
+  `"?"`, returns the fixed prompt from `_select_entry_prompt()` --
+  `"please select the cred name I need to use:"` plus every real entry --
+  and decrypts nothing. `browser_fill`'s `value_secret` goes through the same
+  check. Limitation: a typed name stays confirmed for the rest of the session
+  and for any use, so it is not tied to the request it was named for.
+
+  `_redact()` also scrubs the encoded forms in `_secret_forms()`: percent,
+  form, HTML, JSON, hex, and base64 (both alphabets, padded or not, at every
+  alignment, so `Authorization: Basic ...` is covered). A reversed or
+  otherwise transformed copy is not caught.
+
+  `browser_fill` takes `value` or `value_secret` (a vault entry name), never
+  both. A `value_secret` is decrypted locally, typed into the field, and
+  added to `_filled_secrets` in `core/browser.py`; every browser tool scrubs
+  those values from page text, URLs and errors before clipping, because a clip
+  can cut a secret in half. Delegated task text is sent like any message, so a
+  login that needs a vault secret runs in the router's own browser.
+  `test_browser_secret.py` covers this against a local login form that
+  reflects the password back.
+
+  `browser_navigate`'s `headed` flag opens a visible window (true) or runs
+  headless (false); unset keeps the current mode, headless at start. A change
+  restarts the browser and drops the page, cookies and logins.
+  `test_browser_mode.py` covers it; run it as
+  `xvfb-run -a python test_browser_mode.py < /dev/null` to keep the window
+  off the desktop.
 
   `_select_entry_prompt()` reads `$PASSWORD_STORE_DIR` (falling back to
   `pass`'s own documented `~/.password-store` default) and walks `*.gpg`

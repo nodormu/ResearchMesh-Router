@@ -81,7 +81,7 @@ convenient to set up.
 | `web_search` · `web_fetch` | Anthropic's server-side search and page fetch |
 | `memory` | A `/memories` store that **persists across sessions** — the only state that outlives the process |
 | `computer` | Screenshots plus mouse/keyboard control. **Needs an X11 session** |
-| `browser_navigate` · `_links` · `_click` · `_fill` · `_extract` · `_back` | Headless [Playwright](https://playwright.dev/) — renders JavaScript, follows links, fills forms |
+| `browser_navigate` · `_links` · `_click` · `_fill` · `_extract` · `_back` | [Playwright](https://playwright.dev/), headless by default (`headed` on `browser_navigate` opens a window) — renders JavaScript, follows links, fills forms; `_fill` can type a `pass` vault entry (`value_secret`) without the value appearing in the conversation |
 | `document_convert` | LibreOffice + pandoc. Markdown → `.docx`/`.odt`/`.pdf`, or any office format to any other |
 | `python` | Persistent IPython kernel — **variables survive between calls** |
 | `bash_session` | Persistent shell — **cd/env/venvs/background jobs survive between calls** |

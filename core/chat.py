@@ -5,7 +5,7 @@ from pathlib import Path
 from anthropic.types import MessageParam, ToolResultBlockParam
 from mcp.types import TextContent
 
-from core import local_tools
+from core import local_tools, processes
 
 # Names already spoken for by the router's own local tools, for
 # ToolManager.build's collision guard below. A client TOOLSET entry (e.g.
@@ -171,6 +171,12 @@ real password into a `send` field or into the chat becomes acceptable. Use a ste
 `send_env` (an environment variable, named only) or `send_secret` (a `pass` entry,
 named only) instead — the real value is resolved locally and never has to appear in
 this conversation at all.
+
+The same rule applies to `browser_fill` on a password or token field: never put the
+real value in `value`. Use `value_secret` (a `pass` entry name), with the same entry
+check and prompt shape below. Delegated task text is sent like any other message, so
+never put a password in it; a login that needs a vault secret runs in this machine's
+own browser.
 
 Before asking the user to name a `send_secret` entry, check what actually exists
 first: run `pass ls` yourself (via `bash` — it lists entry names only, decrypts
@@ -970,6 +976,7 @@ class Chat:
         wrong machine.
         """
         final_text_response = ""
+        processes.note_user_message(query)
         self.claude_service.add_user_message(self.messages, query)
 
         # Built once per user turn, not once per tool-use iteration. The fleet
