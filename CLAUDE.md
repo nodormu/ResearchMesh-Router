@@ -55,7 +55,7 @@ tells you where to be careful.
 | `core/config_edit.py`, `data.py`, `documents.py`, `files.py`, `kernel.py`, `listen.py`, `memory.py`, `processes.py`, `speak.py`, `output.py`, `text_embeddings.py`, `vision.py` | copied verbatim in the tool merge, unchanged |
 | `core/browser.py`, `browser_session.py` | `browser.py` copied; diverged here with `value_secret`, then launch modes, profiles, tabs and downloads (launch code moved into the new `browser_session.py`) |
 | `core/bash_session.py`, `process_reaper.py` | ported from ResearchMesh after the tool merge (bash_session added there first, process_reaper alongside it), copied verbatim, kept in the same byte-identical set as the row above |
-| `core/computer.py` | copied verbatim in the tool merge; migrated here first to `computer_toolset_20260801` (a client toolset that expands into 17 member tools), with `cursor_position` added here first too; both ported to ResearchMesh, so it is byte-identical again |
+| `core/computer.py` | copied verbatim in the tool merge; migrated here first to `computer_toolset_20260801` (a client toolset that expands into 17 member tools), with `cursor_position` added here first too; both ported to ResearchMesh, so it is byte-identical again; gained a Wayland backend here (`core/wayland_input.py`) |
 | `core/claude_learned_schemas.py` | copied verbatim in the tool merge; `web_search`/`web_fetch` gained `allowed_callers: ["direct"]` here first (Haiku fix, see the `core/claude.py` bullet), ported to ResearchMesh, byte-identical again |
 | `main.py`, `core/chat.py` | same skeleton; local-tool wiring restored, `SYSTEM_PROMPT` rewritten |
 | `core/claude.py` | same skeleton; still posts to the beta endpoint (originally restored because `computer_20251124` needed it — that need is gone now that `computer.py` uses `computer_toolset_20260801`, but the beta endpoint stayed since it costs nothing to keep, see its Architecture bullet below) |
@@ -117,7 +117,7 @@ playwright install chromium   # pip installs the package, not the browser itself
 ```
 
 **Full install walkthrough (apt packages, the `computer` tool's X11/Wayland
-requirement, LibreOffice/Pandoc) lives in `README.md`'s "Setup (Linux)"
+setup, LibreOffice/Pandoc) lives in `README.md`'s "Setup (Linux)"
 section.** Don't re-derive that walkthrough here — the two commands above are
 what get a working dev environment; the rest there is one-time OS-level setup.
 This repo needs the exact same backings as ResearchMesh's own local tools,
@@ -723,6 +723,18 @@ worker MCP tools**.
   carry a `Human check:` line. `test_browser_mode.py` covers all of it; run it
   as `xvfb-run -a python test_browser_mode.py < /dev/null` to keep windows off
   the desktop.
+
+  `core/computer.py` runs on a pyautogui-shaped backend. On a Wayland session that
+  is `core/wayland_input.py`: one xdg-desktop-portal RemoteDesktop + ScreenCast
+  session held in-process on a private asyncio loop (`dbus-next`). The desktop may
+  ask for approval; KDE shows a "Remote Control" tray icon with an "End" entry, and
+  after End the next action starts a new session. A scroll unit is 10 portal steps
+  (about 120 px in Chrome). The screen is one monitor (the leftmost shared one, or
+  `CLAUDE_COMPUTER_MONITOR`), and screenshots come from `spectacle` or `grim`, cropped
+  to it. `position()` is the last pointer position the backend set, because the
+  portal cannot read it back. `computer._wayland_session()` picks the backend and is
+  what tests patch. `test_wayland_input.py` drives a fake portal; the real session
+  needs the approval dialog and is exercised by hand.
 
   `_select_entry_prompt()` reads `$PASSWORD_STORE_DIR` (falling back to
   `pass`'s own documented `~/.password-store` default) and walks `*.gpg`

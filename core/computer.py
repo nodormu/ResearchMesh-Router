@@ -33,11 +33,13 @@ the same accuracy/cost reasons Anthropic's own docs still recommend it.
 stable (non-beta) feature — there is no `BETA_FLAG` here, and core/claude.py's
 `BETAS` list is empty as a direct result of this migration.
 
-**Wayland.** Input synthesis and screen capture here go through X11/XTEST. On a
-Wayland session that reaches XWayland clients at best and native Wayland windows
-not at all, so rather than silently clicking into the void the tool refuses and
-says why. Override with CLAUDE_COMPUTER_FORCE=1 (useful under XWayland-only
-setups); the real fix is an Xorg session or a nested X server such as Xvfb.
+**Wayland.** X11/XTEST input does not reach native Wayland windows, so on a
+Wayland session input and capture go through core/wayland_input.py: the
+xdg-desktop-portal remote-control session (the desktop may ask for approval; a
+tray icon with an "End" entry stops it) plus spectacle or grim for screenshots. Set
+CLAUDE_COMPUTER_FORCE=1 to use X11/XTEST anyway (XWayland-only setups, nested X
+servers such as Xvfb). Screenshots go to the model, as for every use of this
+toolset.
 """
 
 import asyncio
@@ -46,7 +48,9 @@ import io
 import os
 import subprocess
 import time
+from typing import Any
 
+from core import wayland_input
 from core.output import image_result
 
 # Anthropic's benchmarked baselines are 1280x800 for web apps and 1024x768 /
@@ -138,28 +142,41 @@ def handles(name: str) -> bool:
     return name in _MEMBERS
 
 
+def shutdown() -> None:
+    """End the Wayland remote control session, if one is open."""
+    wayland_input.shutdown()
+
+
 async def execute(name: str, tool_input: dict) -> str | dict:
     if name not in _MEMBERS:
         return f"Error: {name} is not a computer-toolset member"
     return await asyncio.to_thread(_run, name, tool_input)
 
 
+def _wayland_session() -> bool:
+    """True when input must go through the portal: a Wayland session, unless
+    CLAUDE_COMPUTER_FORCE=1 puts it back on X11."""
+    if os.getenv("CLAUDE_COMPUTER_FORCE") == "1":
+        return False
+    return os.getenv("XDG_SESSION_TYPE", "").lower() == "wayland" or bool(
+        os.getenv("WAYLAND_DISPLAY")
+    )
+
+
 def _guard() -> str | None:
-    """Refuse up front on a session where input synthesis silently no-ops."""
+    """Refuse up front when there is no way to reach the screen."""
     if os.getenv("CLAUDE_COMPUTER_FORCE") == "1":
         return None
-    if os.getenv("XDG_SESSION_TYPE", "").lower() == "wayland" or os.getenv(
-        "WAYLAND_DISPLAY"
-    ):
+    if _wayland_session():
+        reason = wayland_input.available()
+        if reason is None:
+            return None
         return (
-            "Error: this is a Wayland session. The computer tool drives the "
-            "screen through X11/XTEST, which Wayland compositors ignore for "
-            "security — clicks and keystrokes would not reach native Wayland "
-            "windows, and screenshots would come back blank or partial. Log in "
-            "to an Xorg session, or run this client under a nested X server "
-            "(e.g. `xvfb-run -s '-screen 0 1280x800x24' python main.py`). To "
-            "attempt it anyway on an XWayland-only setup, set "
-            "CLAUDE_COMPUTER_FORCE=1."
+            f"Error: this is a Wayland session and the portal route is unavailable: "
+            f"{reason}. Install it, log in to an Xorg session, or run this client "
+            "under a nested X server (e.g. `xvfb-run -s '-screen 0 1280x800x24' "
+            "python main.py`). To use X11/XTEST anyway on an XWayland-only setup, "
+            "set CLAUDE_COMPUTER_FORCE=1."
         )
     if not os.getenv("DISPLAY"):
         return (
@@ -182,26 +199,34 @@ def _run(action: str, tool_input: dict) -> str | dict:
     if blocked:
         return blocked
 
-    try:
-        import pyautogui
-    except Exception as e:  # ImportError, or X11 lookup failure at import
-        return (
-            f"Error: the computer tool needs pyautogui ({e}). "
-            "Install it with: pip install pyautogui pillow"
-        )
+    backend: Any
+    if _wayland_session():
+        try:
+            backend = wayland_input.backend()
+        except Exception as e:
+            return f"Error: remote control of the Wayland desktop failed: {e}"
+    else:
+        try:
+            import pyautogui
+        except Exception as e:  # ImportError, or X11 lookup failure at import
+            return (
+                f"Error: the computer tool needs pyautogui ({e}). "
+                "Install it with: pip install pyautogui pillow"
+            )
+        backend = pyautogui
     # Its default is to abort on a corner-of-screen mouse position; that turns a
     # legitimate click at (0, 0) into a crash.
-    pyautogui.FAILSAFE = False
+    backend.FAILSAFE = False
 
     try:
-        result = _dispatch(pyautogui, action, tool_input)
+        result = _dispatch(backend, action, tool_input)
     except Exception as e:
         return f"Error: {action} failed: {e}"
 
     if isinstance(result, dict) or action in _NO_SCREENSHOT:
         return result
     time.sleep(_SETTLE)
-    shot = _screenshot(pyautogui, caption=f"After {action}.")
+    shot = _screenshot(backend, caption=f"After {action}.")
     if isinstance(shot, dict):
         return shot
     return f"{result} (screenshot unavailable: {shot})"

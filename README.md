@@ -80,7 +80,7 @@ convenient to set up.
 | `str_replace_based_edit_tool` | View, create, and edit files |
 | `web_search` · `web_fetch` | Anthropic's server-side search and page fetch |
 | `memory` | A `/memories` store that **persists across sessions** — the only state that outlives the process |
-| `computer` | Screenshots plus mouse/keyboard control. **Needs an X11 session** |
+| `computer` | Screenshots plus mouse/keyboard control, on X11 (`pyautogui`) or Wayland (xdg-desktop-portal remote control; needs `dbus-next` and `spectacle` or `grim`) |
 | `browser_navigate` · `_links` · `_click` · `_fill` · `_extract` · `_back` · `_tab` | [Playwright](https://playwright.dev/), headless by default; `mode` on `browser_navigate` picks `headed`, `virtual` (hidden display) or `real` (installed Chrome) for sites that demand a human check, `profile` keeps cookies — renders JavaScript, follows links and new tabs, saves downloads to `~/Downloads`, fills forms; `_fill` can type a `pass` vault entry (`value_secret`) without the value appearing in the conversation |
 | `document_convert` | LibreOffice + pandoc. Markdown → `.docx`/`.odt`/`.pdf`, or any office format to any other |
 | `python` | Persistent IPython kernel — **variables survive between calls** |
@@ -175,17 +175,19 @@ misleading — `computer` reports `pyautogui` as missing when it's really one of
 two apt packages: **`python3-tk`** (`pyautogui` pulls in `mouseinfo`, which imports
 `tkinter` at module level) or **`scrot`** (`pyscreeze`'s screenshot path on X11).
 
-`computer` also needs a real **X11** display — it synthesises input via X11/XTEST,
-which Wayland compositors ignore by design, so it refuses up front on a Wayland
-session (check `echo $XDG_SESSION_TYPE`) instead of clicking into the void:
+`computer` works on **X11** (`pyautogui`) and on **Wayland** (`echo $XDG_SESSION_TYPE`).
+On Wayland it goes through xdg-desktop-portal: the desktop may ask for approval when a
+session starts, and while it lasts KDE shows a "Remote Control" tray icon whose **End**
+entry stops it (the next action starts a new session). It needs
+`dbus-next` (in `requirements.txt`) and `spectacle` or `grim` for screenshots. The
+screen is one monitor: the leftmost one shared in the dialog, or
+`CLAUDE_COMPUTER_MONITOR=<index>`. Screenshots go to the model, as for any use of this
+tool. To use X11/XTEST on an XWayland-only setup or inside a nested X server instead:
 
 ```bash
-# 1. Log in to an "Xorg"/"X11" session at your display manager, or
-# 2. Run the whole client inside a nested X server:
 sudo apt install xvfb
-xvfb-run -s '-screen 0 1280x800x24' python main.py
-# 3. XWayland-only setup and you want to try regardless:
-export CLAUDE_COMPUTER_FORCE=1
+xvfb-run -s '-screen 0 1280x800x24' python main.py   # nested X server
+export CLAUDE_COMPUTER_FORCE=1                         # XWayland-only setup
 ```
 
 ### 4) Environment variables
@@ -336,8 +338,8 @@ controlling your mouse and keyboard," save it to my Desktop, then export that sa
 file as a PDF, also saved to my Desktop.
 ```
 TIP: don't touch your own mouse and keyboard while it's doing this — fighting it for
-control just makes it harder for the AI. Needs an X11 session — see step 3 above if
-you're on Wayland.
+control just makes it harder for the AI. On Wayland the desktop may ask for approval —
+see step 3 above.
 
 f) **Headless, DOM-based web browsing.**
 ```
@@ -621,7 +623,7 @@ core/
   cli.py          prompt_toolkit REPL
   tools.py        namespacing, worker identity, fan-out  ← the reason this exists
   local_tools.py  registry — the one place a local tool is wired in
-  browser.py  browser_session.py  computer.py  kernel.py  bash_session.py  memory.py  data.py
+  browser.py  browser_session.py  computer.py  wayland_input.py  kernel.py  bash_session.py  memory.py  data.py
   documents.py  processes.py  config_edit.py  files.py  output.py
   claude_learned_schemas.py  text_embeddings.py  vision.py  speak.py
   listen.py  process_reaper.py

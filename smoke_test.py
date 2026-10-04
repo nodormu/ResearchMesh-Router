@@ -2109,12 +2109,15 @@ def check_cursor_position() -> None:
     shot_stub = _stub_pyautogui((2 * dw, 2 * dh), (dw, dh))
     orig_guard = computer._guard
     saved_mod = sys.modules.get("pyautogui")
+    orig_wayland = computer._wayland_session
     computer._guard = lambda: None
+    computer._wayland_session = lambda: False
     sys.modules["pyautogui"] = shot_stub
     try:
         via_run = computer._run("cursor_position", {})
     finally:
         computer._guard = orig_guard
+        computer._wayland_session = orig_wayland
         if saved_mod is None:
             sys.modules.pop("pyautogui", None)
         else:

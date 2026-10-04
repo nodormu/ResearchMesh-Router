@@ -84,6 +84,7 @@ async def shutdown():
     """
     for label, close in (
         ("browser", browser.shutdown),
+        ("computer", computer.shutdown),
         ("kernel", kernel.shutdown),
         ("bash_session", bash_session.shutdown),
         ("sql_query", data.close),
