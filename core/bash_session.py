@@ -156,6 +156,15 @@ def _sentinel_pattern() -> str:
     return re.escape(_sentinel) + r":(-?\d+)"
 
 
+def _restore_default_signals() -> None:
+    """Runs in the child before exec. A router started with SIGINT or SIGQUIT
+    ignored (`nohup cmd &`, some launchers) would pass that on to the shell and
+    its commands, and the timeout's Ctrl-C could then not stop them: recovery
+    would fall through to a respawn and lose cd, env and background jobs."""
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+
+
 def _spawn() -> str | None:
     """(Re)start the persistent shell. Returns an error string, or None."""
     global _shell, _sentinel
@@ -173,6 +182,7 @@ def _spawn() -> str | None:
             codec_errors="replace",
             echo=False,
             timeout=_DEFAULT_TIMEOUT,
+            preexec_fn=_restore_default_signals,
         )
         # Quiet what ~/.bashrc turns on in an interactive shell:
         # bracketed-paste mode, OSC window-title sequences in PS1 and

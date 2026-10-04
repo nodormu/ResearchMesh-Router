@@ -217,6 +217,33 @@ async def check_timeout_and_recovery(bs) -> None:
     )
 
 
+async def check_recovery_with_sigint_ignored(bs) -> None:
+    print("timeout recovery still works when the router ignores SIGINT (nohup, launchers)")
+    import signal
+
+    old_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    old_quit = signal.signal(signal.SIGQUIT, signal.SIG_IGN)
+    try:
+        # The shell spawned next inherits the ignored signals unless _spawn
+        # resets them.
+        await bs.shutdown()
+        await run(bs, "export SIGIGN_MARK=kept")
+        r = await run(bs, "sleep 30", timeout=2)
+        check(
+            "plain recovery, not escalated",
+            r.get("recovered") is True
+            and r.get("force_killed") is False
+            and r.get("state_reset") is False,
+            str(r),
+        )
+        r = await run(bs, "echo MARK=$SIGIGN_MARK")
+        check("state survived the recovery", "MARK=kept" in r.get("output", ""), str(r))
+    finally:
+        signal.signal(signal.SIGINT, old_int)
+        signal.signal(signal.SIGQUIT, old_quit)
+        await bs.shutdown()
+
+
 async def check_raw_mode_program_recovery(bs) -> None:
     print(
         "timeout recovery against a raw-mode program (less) that survives "
@@ -490,6 +517,7 @@ async def _run_all() -> int:
             check_ps1_leak_prompt_command_stomp,
             check_ps1_leak_edge_cases,
             check_timeout_and_recovery,
+            check_recovery_with_sigint_ignored,
             check_raw_mode_program_recovery,
             check_restart,
             check_zsh_support,
