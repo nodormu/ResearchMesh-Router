@@ -58,7 +58,8 @@ duckdb>=0.10             # `sql_query` — SQL over CSV/Parquet/JSON (core/data.
 send2trash>=1.8          # `trash` — recoverable deletes (core/files.py)
 pyautogui>=0.9.54        # `computer` — screen capture + mouse/keyboard (core/computer.py)
 pillow>=10.0             # `computer` — screenshot encode/resize; also pyautogui's backend
-dbus-next>=0.2.3        # `computer` on Wayland — portal remote-control session (core/wayland_input.py)
+dbus-next>=0.2.3         # `computer` on Wayland (portal remote control, core/wayland_input.py)
+                         # and `desktop_window` (KWin scripting, core/desktop_window.py)
 httpx2                   # `text_embeddings`/`vision_query` — calls your own
                          # embedding/vision server (core/text_embeddings.py,
                          # core/vision.py). Already pulled in transitively by

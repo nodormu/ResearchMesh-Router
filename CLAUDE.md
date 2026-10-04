@@ -396,6 +396,11 @@ worker MCP tools**.
   (`"please select the cred name I need to use:"` plus every real entry) and
   decrypts nothing. A confirmed name stays confirmed for the rest of the
   session and for any use; it is not tied to the request it was named for.
+  The match is on the whole name anywhere in the message, so a passing mention
+  ("push it to github" with an entry named `github`) confirms it. A confirmed
+  entry is typed into whatever page is open: a page that talks the model into
+  filling its form receives the real value, and scrubbing does not cover that,
+  because the value never returns through the model.
 
   **Entry names.** `_select_entry_prompt()` reads `$PASSWORD_STORE_DIR`
   (default `~/.password-store`) and walks it for `*.gpg` filenames; nothing is

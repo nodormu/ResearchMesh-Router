@@ -361,7 +361,9 @@ agent asks you to pick from the names you saved.
 **Name check.** An entry is decrypted only if you typed its name in one of your
 own messages this session, so the model cannot pick one on its own. When it needs
 a credential it lists the real entry names and waits for you to name one. A typed
-name stays confirmed for the rest of the session and for any use.
+name stays confirmed for the rest of the session and for any use. The match is on
+the whole name anywhere in your message, so a passing mention ("push it to github"
+with an entry named `github`) also confirms it.
 
 **What is and is not protected:**
 
@@ -374,6 +376,10 @@ name stays confirmed for the rest of the session and for any use.
   transcript, not its text.
 - `send_env` takes the NAME of an environment variable and is scrubbed the same
   way, without `pass`.
+- `browser_fill` types a confirmed entry into whatever page is open. A malicious
+  page that talks the model into filling its login form receives the real value,
+  and scrubbing does not help, because the value never returns through the model.
+  Name an entry only when you want it used, and watch which site the browser is on.
 - Only the first line of a `pass` entry is used.
 - A GPG passphrase prompt (`pinentry`) appears on your screen, not in the
   conversation. If the key is not cached and nobody answers, `pass show` times
