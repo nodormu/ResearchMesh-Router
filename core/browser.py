@@ -121,10 +121,14 @@ TOOLS = [
         "name": "browser_fill",
         "description": (
             "Fill a form field (input or textarea) matching a CSS selector. Give "
-            "exactly one of `value` (literal text; never use it for a password or "
-            "token) or `value_secret` (the NAME of a `pass` vault entry; the real "
+            "exactly one of `value` (literal text such as a username or a one-time "
+            "code the user just gave you; never a password or other long-lived "
+            "secret) or `value_secret` (the NAME of a `pass` vault entry; the real "
             "value is decrypted locally, typed into the field, and never appears in "
-            "this call or its result). Follow with browser_click to submit."
+            "this call or its result). Set `submit` to press Enter in the field "
+            "afterwards and get the resulting page back in the same call, which "
+            "matters for a code that expires in seconds. Otherwise follow with "
+            "browser_click to submit."
         ),
         "input_schema": {
             "type": "object",
@@ -134,6 +138,10 @@ TOOLS = [
                     "description": "CSS selector of the input/textarea.",
                 },
                 "value": {"type": "string", "description": "Text to enter."},
+                "submit": {
+                    "type": "boolean",
+                    "description": "Press Enter in the field after filling and return the page that results.",
+                },
                 "value_secret": {
                     "type": "string",
                     "description": (
@@ -341,6 +349,16 @@ async def _reopen_virtual(url: str) -> str | None:
         return None
 
 
+async def _press_enter(page, selector: str, done: str) -> str:
+    """Press Enter in a field and report the page it leads to."""
+    _live_session().opened_pages.clear()
+    await page.press(selector, "Enter")
+    await asyncio.sleep(0.7)  # the submit can navigate or open a tab
+    page, _ = await _follow_new_tab(page)
+    await page.wait_for_load_state("domcontentloaded")
+    return await _page_report(page, f"{done}, then pressed Enter. Now on")
+
+
 def _live_session() -> Session:
     if _session is None:
         raise RuntimeError("browser session is not open")
@@ -468,6 +486,9 @@ async def _dispatch(name: str, tool_input: dict) -> str:
             selector = tool_input["selector"]
             if ("value" in tool_input) == ("value_secret" in tool_input):
                 return "Error: browser_fill needs exactly one of `value` or `value_secret`"
+            submit = tool_input.get("submit", False)
+            if not isinstance(submit, bool):
+                return "Error: `submit` must be true or false"
             if "value_secret" in tool_input:
                 entry = str(tool_input["value_secret"])
                 secret, error = await asyncio.to_thread(resolve_secret, entry)
@@ -477,9 +498,13 @@ async def _dispatch(name: str, tool_input: dict) -> str:
                     return f"Error: vault entry {entry!r} returned an empty value"
                 _filled_secrets.add(secret)
                 await page.fill(selector, secret)
-                return f"Filled {selector!r} from vault entry {entry!r} (value not shown)"
-            await page.fill(selector, tool_input["value"])
-            return f"Filled {selector!r}"
+                done = f"Filled {selector!r} from vault entry {entry!r} (value not shown)"
+            else:
+                await page.fill(selector, tool_input["value"])
+                done = f"Filled {selector!r}"
+            if not submit:
+                return done
+            return await _press_enter(page, selector, done)
 
         if name == "browser_links":
             needle = (tool_input.get("contains") or "").lower()

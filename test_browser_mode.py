@@ -36,6 +36,8 @@ PAGES = {
                b"<script>setTimeout(()=>{document.querySelector('[name=cf-turnstile-response]')"
                b".value='t'.repeat(40)},700)</script>",
     "/pending": b'<title>p</title><input name="cf-turnstile-response" value="">',
+    "/otp": b'<title>otp</title><form action="/done" method="get"><input id="code" name="code"></form>',
+    "/done": b"<title>done</title>verified",
 }
 
 
@@ -53,7 +55,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(f"{SERVED[0]:010d}".encode())
             return
-        body = PAGES.get(self.path, PAGES["/"])
+        body = PAGES.get(self.path.split("?")[0], PAGES["/"])
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.send_header("Content-Length", str(len(body)))
@@ -165,6 +167,24 @@ async def main_async(mod, sess, base: str) -> None:
     saved = downloads / "x.bin"
     check("report lists the file", f"Downloaded: {saved} (10 bytes)" in out, out[-160:])
     check("file content is right", saved.exists() and saved.read_bytes() == b"0000000001")
+
+    print("browser_fill submit: a one-time code goes in and the next page comes back")
+    await mod.execute("browser_navigate", {"url": base + "/otp"})
+    out = await mod.execute("browser_fill", {"selector": "#code", "value": "123456", "submit": True})
+    check("fill then Enter lands on the next page", out.startswith("Filled '#code', then pressed Enter. Now on: done"), out[:160])
+    check("the form received the code", "code=123456" in out, out[:260])
+    await mod.execute("browser_navigate", {"url": base + "/otp"})
+    out = await mod.execute("browser_fill", {"selector": "#code", "value": "123456"})
+    check("without submit it only fills", out == "Filled '#code'", out)
+    out = await mod.execute("browser_fill", {"selector": "#code", "value": "1", "submit": "yes"})
+    check("a non-boolean submit is refused", out == "Error: `submit` must be true or false", out)
+
+    from core import chat
+
+    check("the prompt allows a one-time code in chat and says to submit it",
+          "one-time code" in chat.SYSTEM_PROMPT and "`submit: true`" in chat.SYSTEM_PROMPT)
+    check("the prompt does not tell the user to type it themselves",
+          "Never ask\nthe user to type it into the browser" in chat.SYSTEM_PROMPT)
 
     print("a profile keeps cookies across restarts and is private")
     await mod.execute("browser_navigate", {"url": base, "profile": "tprof"})

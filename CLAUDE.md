@@ -721,6 +721,9 @@ worker MCP tools**.
   Downloads are saved to `~/Downloads` (`RESEARCHMESH_DOWNLOAD_DIR` overrides)
   under a unique name and listed as `Downloaded:` lines; a CDP-attached Chrome
   overwrites a same-name file, so it writes to a staging dir first. Reports
+  `browser_fill` takes `submit` (press Enter, return the next page) so a one-time
+  code goes in within its few seconds; the router prompt says such a code is not a
+  vault secret and may come through the chat.
   carry a `Human check:` line; a fresh default-mode visit that a check stops is
   reopened once in `virtual` mode (never `real`, which opens a window). The router
   prompt in `core/chat.py` says which browsing tool to use. `test_browser_mode.py`
