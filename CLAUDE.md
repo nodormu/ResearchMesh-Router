@@ -52,7 +52,8 @@ tells you where to be careful.
 |---|---|
 | `core/cli.py` | copied; diverged when `/workers`/`/dagent` were added, and again when `/voice`/`/listen` were ported over from ResearchMesh |
 | `mcp_client.py` | copied, plus `timeout_seconds` |
-| `core/browser.py`, `config_edit.py`, `data.py`, `documents.py`, `files.py`, `kernel.py`, `listen.py`, `memory.py`, `processes.py`, `speak.py`, `output.py`, `text_embeddings.py`, `vision.py` | copied verbatim in the tool merge, unchanged |
+| `core/config_edit.py`, `data.py`, `documents.py`, `files.py`, `kernel.py`, `listen.py`, `memory.py`, `processes.py`, `speak.py`, `output.py`, `text_embeddings.py`, `vision.py` | copied verbatim in the tool merge, unchanged |
+| `core/browser.py`, `browser_session.py` | `browser.py` copied; diverged here with `value_secret`, then launch modes, profiles, tabs and downloads (launch code moved into the new `browser_session.py`) |
 | `core/bash_session.py`, `process_reaper.py` | ported from ResearchMesh after the tool merge (bash_session added there first, process_reaper alongside it), copied verbatim, kept in the same byte-identical set as the row above |
 | `core/computer.py` | copied verbatim in the tool merge; migrated here first to `computer_toolset_20260801` (a client toolset that expands into 17 member tools), with `cursor_position` added here first too; both ported to ResearchMesh, so it is byte-identical again |
 | `core/claude_learned_schemas.py` | copied verbatim in the tool merge; `web_search`/`web_fetch` gained `allowed_callers: ["direct"]` here first (Haiku fix, see the `core/claude.py` bullet), ported to ResearchMesh, byte-identical again |
@@ -704,12 +705,24 @@ worker MCP tools**.
   `test_browser_secret.py` covers this against a local login form that
   reflects the password back.
 
-  `browser_navigate`'s `headed` flag opens a visible window (true) or runs
-  headless (false); unset keeps the current mode, headless at start. A change
-  restarts the browser and drops the page, cookies and logins.
-  `test_browser_mode.py` covers it; run it as
-  `xvfb-run -a python test_browser_mode.py < /dev/null` to keep the window
-  off the desktop.
+  `browser_navigate` takes `mode` (`headless`, `headed`, `virtual`, `real`) and
+  `profile`; `headed` stays as an alias. `core/browser_session.py` owns the
+  launch. Playwright modes pass `--disable-blink-features=AutomationControlled`:
+  without it `navigator.webdriver` is true and Cloudflare Turnstile fails.
+  Headless uses installed Chrome with its user agent corrected, `virtual` runs
+  Chrome on a private Xvfb, and `real` starts installed Chrome normally on a
+  127.0.0.1 debug port and attaches over CDP (Chrome refuses a debug port on
+  its default profile, so it always gets its own directory). A named `profile`
+  is a mode-700 directory under `~/.cache/researchmesh/browser-profiles`;
+  without one the profile is temporary. A change of mode or profile restarts
+  the browser and drops the page and any login not kept in a profile. A click
+  that opens a tab switches to it; `browser_tab` lists, switches and closes.
+  Downloads are saved to `~/Downloads` (`RESEARCHMESH_DOWNLOAD_DIR` overrides)
+  under a unique name and listed as `Downloaded:` lines; a CDP-attached Chrome
+  overwrites a same-name file, so it writes to a staging dir first. Reports
+  carry a `Human check:` line. `test_browser_mode.py` covers all of it; run it
+  as `xvfb-run -a python test_browser_mode.py < /dev/null` to keep windows off
+  the desktop.
 
   `_select_entry_prompt()` reads `$PASSWORD_STORE_DIR` (falling back to
   `pass`'s own documented `~/.password-store` default) and walks `*.gpg`

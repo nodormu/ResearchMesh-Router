@@ -43,7 +43,7 @@ AIs in Teams or Slack like any other coworker, and route its actual work through
 same systems everyone else's work goes through — a CRM/CMDB (ServiceNow, ConnectWise,
 whatever the organization already runs) as its system of record, change tickets
 opened for anything that touches production. Those are examples, not a fixed list.
-None of that is built into this app's 23 tools directly; it's what
+None of that is built into this app's 24 tools directly; it's what
 [Adding workers](#adding-workers) is *for* — connect a worker to an email MCP server,
 a Teams/Slack one, your CMDB's — and it participates the same way a new hire would,
 through the same front doors, not a side channel. That reframes what "no approval
@@ -72,7 +72,7 @@ convenient to set up.
 
 ## What it can do
 
-**23 local tools**, plus one per connected worker:
+**24 local tools**, plus one per connected worker:
 
 | Tool | For |
 |---|---|
@@ -81,7 +81,7 @@ convenient to set up.
 | `web_search` · `web_fetch` | Anthropic's server-side search and page fetch |
 | `memory` | A `/memories` store that **persists across sessions** — the only state that outlives the process |
 | `computer` | Screenshots plus mouse/keyboard control. **Needs an X11 session** |
-| `browser_navigate` · `_links` · `_click` · `_fill` · `_extract` · `_back` | [Playwright](https://playwright.dev/), headless by default (`headed` on `browser_navigate` opens a window) — renders JavaScript, follows links, fills forms; `_fill` can type a `pass` vault entry (`value_secret`) without the value appearing in the conversation |
+| `browser_navigate` · `_links` · `_click` · `_fill` · `_extract` · `_back` · `_tab` | [Playwright](https://playwright.dev/), headless by default; `mode` on `browser_navigate` picks `headed`, `virtual` (hidden display) or `real` (installed Chrome) for sites that demand a human check, `profile` keeps cookies — renders JavaScript, follows links and new tabs, saves downloads to `~/Downloads`, fills forms; `_fill` can type a `pass` vault entry (`value_secret`) without the value appearing in the conversation |
 | `document_convert` | LibreOffice + pandoc. Markdown → `.docx`/`.odt`/`.pdf`, or any office format to any other |
 | `python` | Persistent IPython kernel — **variables survive between calls** |
 | `bash_session` | Persistent shell — **cd/env/venvs/background jobs survive between calls** |
@@ -216,7 +216,7 @@ python main.py
 ```
 
 **Workers ship disabled** — `config.toml` ships with every server commented out, so a
-fresh clone runs on the 23 local tools alone.
+fresh clone runs on the 24 local tools alone.
 
 ### 6) Using it
 
@@ -514,7 +514,7 @@ A caveat on precision: I can tell you how the tool is documented and designed to
 
 Non-secret settings live in `config.toml`. Secrets stay in the environment — the app
 does **not** read a `.env` file. **Workers ship disabled** — it ships with every server
-commented out, so a fresh clone runs on the 23 local tools alone.
+commented out, so a fresh clone runs on the 24 local tools alone.
 
 ```toml
 [router]
@@ -621,7 +621,7 @@ core/
   cli.py          prompt_toolkit REPL
   tools.py        namespacing, worker identity, fan-out  ← the reason this exists
   local_tools.py  registry — the one place a local tool is wired in
-  browser.py  computer.py  kernel.py  bash_session.py  memory.py  data.py
+  browser.py  browser_session.py  computer.py  kernel.py  bash_session.py  memory.py  data.py
   documents.py  processes.py  config_edit.py  files.py  output.py
   claude_learned_schemas.py  text_embeddings.py  vision.py  speak.py
   listen.py  process_reaper.py
