@@ -437,7 +437,9 @@ worker MCP tools**.
     needs Chrome and Xvfb. `real` starts installed Chrome normally on a
     127.0.0.1 debug port and attaches over CDP; it needs Chrome and a display,
     and always gets its own profile directory because Chrome refuses a debug
-    port on its default profile.
+    port on its default profile. The port is chosen in advance (`_free_port`),
+    not `0`: Chrome treats `--remote-debugging-port=0` as automation and sets
+    `navigator.webdriver` to true, which defeats the mode.
   - Playwright modes pass `--disable-blink-features=AutomationControlled`:
     without it `navigator.webdriver` is true and Cloudflare Turnstile fails.
   - `profile` is 1-40 characters of letters, digits, `-` or `_`: a mode-700
@@ -481,6 +483,10 @@ worker MCP tools**.
     height, otherwise estimated, with a one-time console warning.
   - `position()` returns the last pointer position the backend set, because the
     portal cannot read it back; it raises until the first move.
+  - `write()` presses each character as a keysym and does not press Shift or
+    AltGr itself: the compositor supplies the shift level. KWin does, so `A`, `!`
+    and the rest of printable ASCII arrive as sent; another compositor's portal
+    may not.
   - `test_wayland_input.py` drives a fake portal. The real session needs the
     approval dialog and is exercised by hand.
 - **`core/desktop_window.py`** — `desktop_window`: list, focus, move and resize

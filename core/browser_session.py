@@ -203,6 +203,8 @@ class Session:
         else:
             self._tmpdir = pdir = Path(tempfile.mkdtemp(prefix="rm-chrome-"))
         _seed_preferences(pdir)
+        # A port chosen in advance, not 0: Chrome treats --remote-debugging-port=0
+        # as automation and sets navigator.webdriver to true.
         port = _free_port()
         proc = await asyncio.create_subprocess_exec(
             chrome, f"--remote-debugging-port={port}", "--remote-debugging-address=127.0.0.1",

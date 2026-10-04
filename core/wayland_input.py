@@ -273,6 +273,9 @@ class PortalInput:
             self.keyUp(key)
 
     def write(self, text: str, interval: float = 0.0) -> None:
+        """Type `text`, one keysym per character. Shift and AltGr are not pressed
+        here: the compositor supplies the shift level for a keysym such as `A` or
+        `!`. KWin does; another compositor's portal may not."""
         for char in text:
             name = {"\n": "enter", "\t": "tab"}.get(char, char)
             self.keyDown(name)
