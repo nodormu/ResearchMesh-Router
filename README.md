@@ -69,9 +69,9 @@ not in this client.
 | `web_search` · `web_fetch` | Anthropic's server-side search and page fetch |
 | `memory` | A `/memories` store that **persists across sessions** — the only state that outlives the process |
 | `computer` | Screenshots plus mouse/keyboard control, on X11 (`pyautogui`) or Wayland (xdg-desktop-portal remote control; needs `dbus-next` and `spectacle` or `grim`) |
-| `desktop_window` | List, focus, move and resize windows on a KDE desktop (KWin scripting; needs `dbus-next`), so keystrokes reach the right window |
-| `screen_find` | Find on-screen text or buttons by OCR and return click coordinates in `computer`'s space; reads text on coloured buttons that plain OCR misses (needs `tesseract`) |
-| `browser_navigate` · `_links` · `_click` · `_fill` · `_extract` · `_back` · `_tab` | [Playwright](https://playwright.dev/), headless by default; `mode` on `browser_navigate` picks `headed`, `virtual` (hidden display) or `real` (installed Chrome) for sites that demand a human check, `profile` keeps cookies — renders JavaScript, follows links and new tabs, saves downloads to `~/Downloads`, fills forms; `_fill` can type a `pass` vault entry (`value_secret`) without the value appearing in the conversation |
+| `desktop_window` | List windows, and focus, move, resize, full-screen, minimize or restore one, on a KDE desktop (KWin scripting; needs `dbus-next`), so keystrokes reach the right window |
+| `screen_find` | Find on-screen text (`text`) or button-like blocks (`buttons: true`), optionally inside a `region`, by OCR, and return click coordinates in `computer`'s space; reads text on coloured buttons that plain OCR misses (needs `tesseract`) |
+| `browser_navigate` · `_links` · `_click` · `_fill` · `_extract` · `_back` · `_tab` | [Playwright](https://playwright.dev/) DOM browsing: renders JavaScript, follows links and new tabs, fills forms, saves downloads to `~/Downloads`. `_navigate` takes `mode` and `profile` (see below), `_tab` lists, switches and closes tabs, and `_fill` takes a `pass` vault entry (`value_secret`) without the value appearing in the conversation, or `submit` to press Enter afterwards |
 | `document_convert` | LibreOffice + pandoc. Markdown → `.docx`/`.odt`/`.pdf`, or any office format to any other |
 | `python` | Persistent IPython kernel — **variables survive between calls** |
 | `bash_session` | Persistent shell — **cd/env/venvs/background jobs survive between calls** |
@@ -83,6 +83,20 @@ not in this client.
 | `vision_query` | Ask a question about an image via your own vision-capable chat server, instead of sending it to Anthropic's API. See `[vision]` in config.toml for worked examples |
 | `speak` · `listen` | Local text-to-speech (Piper) and speech-to-text (faster-whisper) through your own speaker and mic; no cloud audio API. Both return `not_configured` until `[speak]` and `[listen]` are set in config.toml, which also covers first-time device setup |
 | `<worker>__delegate` | Hand a whole task to a ResearchMesh agent on another machine |
+
+**Browser modes.** `browser_navigate` takes `mode` and `profile`:
+
+- `headless` (default): no window; installed Chrome if present, else bundled Chromium.
+- `headed`: a visible window on your desktop.
+- `virtual`: Chrome on a hidden display (Xvfb); no window appears.
+- `real`: your installed Chrome started normally and attached over CDP, the least
+  detectable mode. It opens a window you can click in.
+- `profile` names a persistent profile (cookies and logins survive restarts) under
+  `~/.cache/researchmesh/browser-profiles`. Without one the session is temporary.
+  Changing mode or profile restarts the browser.
+- A report carries a `Human check:` line when a Cloudflare check appears. A fresh
+  default-mode visit that a check stops is reopened once in `virtual` mode; if it
+  still says pending, use `real` or click the check yourself.
 
 Every machine has its own copy of all this. The `python` kernel here is not a
 worker's kernel, and `/memories` here is not a worker's memory store. Same names,
@@ -173,9 +187,10 @@ may ask for approval when a session starts, and while it lasts KDE shows a
 "Remote Control" tray icon whose **End** entry stops it (the next action starts a
 new session). It needs `dbus-next` (in `requirements.txt`) and `spectacle` or
 `grim` for screenshots. The screen is one monitor: the leftmost one shared in the
-dialog, or `CLAUDE_COMPUTER_MONITOR=<index>`. `CLAUDE_DISPLAY_SIZE=WxH` sets the
-logical display size declared to the model (default `1280x800`). Screenshots go
-to the model, as for any use of this tool. To use X11/XTEST on an XWayland-only
+dialog, or `CLAUDE_COMPUTER_MONITOR=<index>`. Share every monitor in the dialog:
+sharing only one that sits left of another gives a wrongly scaled screenshot.
+`CLAUDE_DISPLAY_SIZE=WxH` sets the logical display size declared to the model
+(default `1280x800`). Screenshots go to the model, as for any use of this tool. To use X11/XTEST on an XWayland-only
 setup or inside a nested X server instead:
 
 ```bash
@@ -211,8 +226,8 @@ look related. Point the router at its own path (`~/.router-memories` or similar)
 python main.py
 ```
 
-`config.toml` ships with every worker commented out, so a fresh clone runs on the
-26 local tools alone.
+`config.toml` ships with `[mcp].enabled = false`, so a fresh clone runs on the 26
+local tools alone. Set it to `true` once you have added workers.
 
 ### 6) Using it
 
@@ -521,7 +536,7 @@ The transcript the model receives shows the password as `***`.
 ## Configuration
 
 Non-secret settings live in `config.toml`. Secrets stay in the environment; the app
-does **not** read a `.env` file. The file ships with every worker commented out, so a
+does **not** read a `.env` file. The file ships with `[mcp].enabled = false`, so a
 fresh clone runs on the 26 local tools alone.
 
 ```toml
