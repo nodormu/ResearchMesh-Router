@@ -267,8 +267,8 @@ model is set in that worker's own `config.toml`.
 for Haiku after one rejected request (a `[model compat]` line is printed) and
 every other tool keeps working. If `computer` was used earlier in the
 conversation on another model, `/model swap` to Haiku fails every turn with a 400
-(`toolset_name 'computer' ... no toolset entry is declared`): swap back, or
-`/clear`.
+(`toolset_name 'computer' on a tool_use block is not the family of a declared
+toolset entry (no toolset entry is declared)`): swap back, or `/clear`.
 
 **`/model <worker>`** lists a connected worker's models instead, e.g.
 `/model gpu-box`, from that worker's own `model` MCP tool (a sibling of

@@ -254,8 +254,8 @@ worker MCP tools**.
   the smoke test), and declaring both computer tools in one request is a 400 on
   every model. After the computer tool was used on another model in the same
   conversation, `/model swap` to Haiku fails every turn with a 400
-  (`toolset_name 'computer' ... is not the family of a declared toolset entry`);
-  swap back or `/clear`. `/dagent` sends no local tools, so the same applies
+  (`toolset_name 'computer' on a tool_use block is not the family of a declared
+  toolset entry (no toolset entry is declared)`); swap back or `/clear`. `/dagent` sends no local tools, so the same applies
   there (checked at the API level only).
 
 - **`mcp_client.py`** — kept close to the copy it came from, so the two stay
