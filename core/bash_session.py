@@ -1,74 +1,29 @@
-"""Persistent bash — a real shell process that survives across tool calls.
+"""Persistent bash: one shell process that survives across tool calls.
 
-The `bash` tool (core/claude_learned_schemas.py) spawns a fresh subprocess
-every call, so `cd`, exported env vars, sourced venvs, shell functions, and
-background jobs all die at the end of that call. This module keeps ONE
-shell alive for the life of the session — same singleton-process pattern
-core/kernel.py uses for the IPython kernel, just driven over a pty via
-pexpect (already a hard dependency — see core/processes.py, which uses the
-same library for interactive_run) instead of ZeroMQ.
+The `bash` tool spawns a fresh subprocess per call, so `cd`, exports, venvs,
+functions and background jobs die with it. This module keeps one shell alive,
+driven over a pty with pexpect (as core/processes.py does) and held as a
+singleton like the kernel in core/kernel.py.
 
-Framing: each command is wrapped in a brace group together with a
-`printf` that emits a random per-spawn sentinel plus `$?`. We `expect()`
-that sentinel to know exactly where the command's output ends and what it
-returned. The group also keeps a defensive PS1/PROMPT_COMMAND reset inside
-the same still-open construct as the command itself, so a command that
-changes the prompt (a venv/conda/direnv activation) can't leak prompt text
-into the output — see the reset in `_run()` for the mechanism.
+Framing: each command runs inside a brace group together with a `printf` of a
+random per-spawn sentinel plus `$?`; `expect()` on the sentinel marks where
+output ends and what it returned. The group also resets PS1 and the prompt
+hook, so a command that changes the prompt (venv, conda, direnv) cannot leak
+prompt text into the output.
 
-Reuses `SHELL_EXECUTABLE`/`apply_shell_prelude` from
-core/claude_learned_schemas.py, so `[bash].shell = "zsh"` or `"dash"`
-reaches this module too, not just the stateless `bash` tool. Three shells
-are genuinely supported: bash (the default), zsh, and dash (Ubuntu/
-Debian's real `/bin/sh`, so it matters even though bash is the default
-interactive shell). Other shells (fish, tcsh, ksh) were tried live and
-found to either hang outright or need fundamentally different
-grouping/assignment syntax this module doesn't speak — not a quick fix,
-deliberately not attempted here.
+Shells: bash (default), zsh and dash, chosen by `[bash].shell` through
+`SHELL_EXECUTABLE` and `apply_shell_prelude` in core/claude_learned_schemas.py.
+fish, tcsh and ksh are unsupported: they hang or need different grouping
+syntax. zsh needs `_ZSH_SESSION_PRELUDE` (disable its line editor, which
+redraws lines with backspaces) and a `precmd()` reset in place of
+`PROMPT_COMMAND`.
 
-zsh needs two real, zsh-specific fixes beyond the shared prelude, both
-found live against a real zsh 5.9 and both invisible on bash's own pty
-session (which never echoes input back at all, unlike zsh):
-`_ZSH_SESSION_PRELUDE` disables zsh's line editor (which otherwise
-redraws every line with backspace
-sequences this module's ANSI stripping can't handle) and two cosmetic
-prompt options, sent as its own round-trip before anything else *because*
-folding it into the same multi-line send as the rest of `_spawn()`'s
-priming left the remainder unread forever, since ZLE was still the active
-reader for that first line; and `_PS1_RESET` resolves to a `precmd()`
-function on zsh instead of `PROMPT_COMMAND` (which zsh has no concept of
-at all), with the same load-bearing timing — only consulted before a NEW
-top-level prompt, never mid-compound-construct — that makes the brace-
-group trick close the leak there too, verified against the same worst-case
-stomp (a command changing PS1 *and* redefining the reset mechanism itself)
-the bash path already handles.
-
-Not a replacement for `bash`: use plain `bash` for one-off commands, this
-for anything that needs state to survive across multiple calls. Also not a
-replacement for `interactive_run` — a foreground command that blocks on
-its own stdin (a password prompt, `read`, an installer, a pager, a REPL, a
-full-screen program like `vim`/`top`) will still hang here for the full
-per-call timeout, exactly as it would in `bash`, since there's no way to
-know in advance that it's waiting on input rather than just running long.
-
-What changed is what happens AFTER that timeout, in `_handle_timeout()`.
-Plain Ctrl-C only works if whatever's stuck has no handler for it — true
-for a blocking command (`sleep`, `curl`, a stuck loop), false for any
-raw-mode program that installs one specifically to survive Ctrl-C (a
-pager, `vim`, `top`, `psql`, many REPLs — the general case, not a
-`less`-specific quirk). For that class, recovery does NOT try to keep
-negotiating with the same pty: confirmed live that even after correctly
-detecting Ctrl-C didn't work (`_bash_owns_foreground()` asks the kernel
-who owns the terminal, rather than trusting a sentinel regex match that a
-still-alive program can coincidentally echo back itself), retrying on the
-SAME pexpect buffer after force-killing it can still leave a stale,
-unconsumed byte to surface on the NEXT real command instead of this one.
-So escalation kills what's left as a courtesy, then respawns an entirely
-fresh shell via the same code `restart: true` uses — proven reliable
-unconditionally — rather than trying to more precisely characterize that
-race. `recovered: true` after escalation is honest, but `state_reset:
-true` alongside it says cd/env/background jobs did NOT survive, unlike
-the plain-Ctrl-C case, which still preserves them exactly as before.
+Not a replacement for `bash` (one-off commands) or `interactive_run`: a
+foreground command that blocks on its own stdin (password prompt, pager, REPL,
+`vim`) hangs until the per-call timeout. After a timeout `_handle_timeout()`
+sends Ctrl-C; if bash does not get the terminal back it respawns a fresh shell,
+and the result carries `state_reset: true` (cd, env and background jobs were
+lost).
 """
 
 import asyncio
@@ -82,39 +37,19 @@ from pathlib import Path
 from core.claude_learned_schemas import SHELL_EXECUTABLE, apply_shell_prelude
 from core.output import clip
 
-# Same zsh check apply_shell_prelude() already makes internally, computed
-# here too since the PS1-leak defense below needs a genuinely different
-# mechanism on zsh, not just an extra prelude line.
+# Same zsh check as apply_shell_prelude(); needed here because the PS1-leak
+# defense differs on zsh.
 _IS_ZSH = Path(SHELL_EXECUTABLE).name == "zsh"
 
-# dash: Ubuntu/Debian's real /bin/sh, so it matters even though bash is the
-# default interactive shell — anything that shells out via /bin/sh runs
-# under it. Confirmed live it reaches this module the same way zsh does
-# ([bash].shell = "dash"), and was silently broken the same way zsh
-# originally was, for a different underlying reason (see _PS1_RESET below).
+# dash is Ubuntu/Debian's /bin/sh, so anything that shells out via /bin/sh runs
+# under it. It reaches this module the same way zsh does ([bash].shell =
+# "dash").
 _IS_DASH = Path(SHELL_EXECUTABLE).name == "dash"
 
-# bash's PROMPT_COMMAND has no equivalent by that name on either zsh or
-# dash, confirmed live on both, for two DIFFERENT reasons:
-#   zsh: calls a `precmd` function instead (see below), which still has
-#     the same load-bearing "only before a NEW top-level prompt" timing
-#     PROMPT_COMMAND relies on — so it needs the same kind of hook-based
-#     reset bash uses, just spelled differently.
-#   dash: has NO dynamic prompt-hook mechanism AT ALL — no
-#     PROMPT_COMMAND, no precmd, nothing. Its interactive prompt-printing
-#     just reads $PS1's current value fresh, with nothing invoked in
-#     between. That actually makes its fix simpler than either bash or
-#     zsh, not harder: bash/zsh need a HOOK specifically because a user
-#     command (conda/venv activate) can re-arm that hook to fire again
-#     later, after our own reset has already run, right before the next
-#     visible prompt. Dash has no re-invocation mechanism a command could
-#     exploit that way — whichever assignment to PS1 happens LAST simply
-#     wins. So a plain, unconditional `PS1=''` as the final statement
-#     inside the same brace group is fully sufficient on dash — nothing
-#     can run after it but before dash prints its next prompt. Verified
-#     live: a command that sets PS1 directly (dash's actual worst case,
-#     since there's no hook to also redefine) still leaks zero characters
-#     into the next call.
+# `PROMPT_COMMAND` is bash-only. zsh calls a `precmd` function before each new
+# top-level prompt, so it needs the same hook-based reset. dash has no prompt
+# hook at all: it reads $PS1 fresh when it prints a prompt, so a plain `PS1=''`
+# as the last statement in the brace group is enough.
 if _IS_ZSH:
     _PS1_RESET = "precmd() { PS1=''; }"
 elif _IS_DASH:
@@ -122,35 +57,18 @@ elif _IS_DASH:
 else:
     _PS1_RESET = "PROMPT_COMMAND='PS1=\"\"'"
 
-# zsh-only spawn-time priming, prepended ahead of everything else so it's
-# already in effect before any real command runs. No-op string on bash.
-#   unsetopt zle     -- fixes a real, confirmed-live corruption bug: zsh's
-#                        line editor (ZLE) redraws every line with backspace
-#                        sequences ("e\x08echo ...") that this module's ANSI
-#                        stripping doesn't handle (bash's readline doesn't do
-#                        this in a non-interactive-feeling pty), which
-#                        visibly mangled command text before this fix (e.g.
-#                        "printf" arriving as "print ff"). Once unset, zsh
-#                        falls back to a plain, non-redrawing line reader for
-#                        every command after the one that unset it — which is
-#                        why this has to be the very first thing sent.
-#   promptcr promptsp -- purely cosmetic, not a correctness fix: removes
-#                        zsh's PROMPT_EOL_MARK ("%" printed when the last
-#                        output didn't end in a newline) and the right-edge
-#                        padding it triggers, for byte-for-byte parity with
-#                        bash's fully blank prompt instead of stray noise on
-#                        every call.
+# zsh-only spawn-time priming, sent first; empty on bash.
+# `unsetopt zle`: zsh's line editor redraws lines with backspace sequences that
+# the ANSI stripping cannot handle ("printf" arrived as "print ff"). Must be
+# the first thing sent.
+# `promptcr promptsp`: cosmetic; removes the PROMPT_EOL_MARK `%` and its
+# padding.
 _ZSH_SESSION_PRELUDE = "unsetopt zle promptcr promptsp\n" if _IS_ZSH else ""
 
-# A bare interactive shell loads the user's own ~/.bashrc in full, which on
-# most distros (confirmed live here) sets a colored PS1, an OSC window-title
-# escape, and bash enables readline's bracketed-paste mode automatically on
-# every interactive read — none of that is driven by *our* commands, so it
-# can't be avoided by just not asking for color. Suppressed once at spawn
-# (bracketed paste, PROMPT_COMMAND, PS1) rather than per call, since it's a
-# persistent shell. Also stripped defensively from every captured output
-# below, in case anything the user's OWN commands run emits its own color
-# codes, or an unusual shell config leaks something past the spawn-time fix.
+# A bare interactive shell loads ~/.bashrc, which sets a coloured PS1 and an
+# OSC title escape, and bash turns on bracketed-paste mode. None of it is
+# driven by our commands, so it is suppressed once at spawn (bracketed paste,
+# PROMPT_COMMAND, PS1) and also stripped from captured output.
 _ANSI = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[a-zA-Z]")
 
 TOOLS = [
@@ -213,8 +131,8 @@ _RECOVERY_TIMEOUT = 10
 try:
     import pexpect
 except ImportError:  # pragma: no cover - pexpect is a hard dependency; this
-    # mirrors the friendly-degrade style core/processes.py already uses for
-    # the same import, in case anything is ever run from a stripped venv.
+    # Degrades to an install hint when pexpect is missing, as core/processes.py
+    # does.
     pexpect = None
 
 _shell = None
@@ -232,10 +150,8 @@ async def execute(name: str, tool_input: dict) -> str:
 
 
 def _sentinel_pattern() -> str:
-    # Only ever called after `_spawn()` has set `_sentinel` (from `_spawn()`
-    # itself, or from `_run()`/`_handle_timeout()` post-self-heal) — spelled
-    # out for mypy rather than assumed, same reasoning as kernel.py's own
-    # equivalent None-check before dereferencing its globals.
+    # Only called after `_spawn()` has set `_sentinel`; the check narrows the
+    # type for mypy.
     assert _sentinel is not None
     return re.escape(_sentinel) + r":(-?\d+)"
 
@@ -258,40 +174,21 @@ def _spawn() -> str | None:
             echo=False,
             timeout=_DEFAULT_TIMEOUT,
         )
-        # Quiet the interactive-shell decoration that ~/.bashrc turns on and
-        # that a bare spawn otherwise inherits in full: bracketed-paste mode
-        # (readline toggles \e[?2004h/l around every line it reads, whether
-        # or not PS1 uses color), any OSC window-title sequence woven into
-        # PS1 or PROMPT_COMMAND, PS1 itself, and PS2 (the continuation
-        # prompt bash prints while still reading a multi-line for-loop or
-        # heredoc — confirmed live: without blanking this too, "> " leaks
-        # into the merged output of any multi-line command). `bind` is
-        # bash-specific and
-        # silently no-ops (stderr swallowed) on other shells, which is fine
-        # — this priming line's output is discarded either way. Then apply
-        # the zsh word-splitting/glob prelude ONCE here (a no-op string on
-        # bash — apply_shell_prelude returns the command unchanged when
-        # SHELL_EXECUTABLE isn't zsh) rather than on every call the way the
-        # stateless `bash` tool has to: a `setopt`/`unsetopt` made now stays
-        # in effect for the rest of this shell's life. The same sendline
-        # also serves as the initial sentinel round-trip, so the shell's
-        # own startup banner/first prompt never leaks into command #1's
-        # captured output.
-        # PROMPT_COMMAND is armed with a defensive PS1-blanking hook here,
-        # not unset — see the matching per-call reset in `_run()` below for
-        # why (bash runs PROMPT_COMMAND immediately before printing each
-        # prompt, which is what closes the PS1-leak race).
+        # Quiet what ~/.bashrc turns on in an interactive shell:
+        # bracketed-paste mode, OSC window-title sequences in PS1 and
+        # PROMPT_COMMAND, PS1, and PS2 (blanked so "> " does not leak into
+        # multi-line commands). `bind` is bash-only and fails silently
+        # elsewhere. The zsh prelude is applied once here, since a `setopt`
+        # stays in effect for the shell's life. The same line is the initial
+        # sentinel round trip, so the startup banner never reaches command #1's
+        # output. PROMPT_COMMAND is armed with a PS1-blanking hook, not unset;
+        # see the per-call reset in `_run()`.
         if _ZSH_SESSION_PRELUDE:
-            # Sent as its own round-trip, not folded into the combined
-            # priming line below — confirmed live this is load-bearing, not
-            # just tidiness: zsh's line editor (ZLE) is still the active
-            # reader for THIS line, and turning it off mid-line leaves the
-            # rest of a single multi-line sendline() sitting unread in the
-            # pty's buffer, genuinely hanging the next expect() forever
-            # (reproduced directly before splitting this out). Waiting for
-            # this line's own echo first guarantees zsh has already
-            # switched to its plain, non-ZLE reader before anything else is
-            # sent.
+            # Its own round trip, not folded into the priming line below: zsh's
+            # line editor is still reading this line, so turning it off
+            # mid-line leaves the rest of a multi-line sendline() unread and
+            # hangs the next expect(). Waiting for this line's echo guarantees
+            # the plain reader is active.
             shell.sendline(_ZSH_SESSION_PRELUDE.rstrip("\n"))
             shell.expect_exact(_ZSH_SESSION_PRELUDE.rstrip("\n"), timeout=_DEFAULT_TIMEOUT)
         primed = apply_shell_prelude("true")
@@ -327,12 +224,8 @@ def _run(tool_input: dict) -> str:
         if error:
             return json.dumps({"error": error})
 
-    # Set by `_spawn()` above, which returns an error string if it
-    # couldn't — so this is unreachable in practice. Spelled out for mypy
-    # rather than assumed, since every use below dereferences `_shell`
-    # directly and a silent None here would be an AttributeError mid-
-    # command instead of a clean error — same pattern/reasoning as
-    # kernel.py's own equivalent check before its own globals.
+    # Set by `_spawn()`, which returns an error string on failure, so this is
+    # unreachable in practice; it narrows the type for mypy.
     if _shell is None:
         return json.dumps({"error": "shell is not running"})
 
@@ -343,24 +236,17 @@ def _run(tool_input: dict) -> str:
     timeout = int(tool_input.get("timeout") or _DEFAULT_TIMEOUT)
 
     try:
-        # Command + reset/sentinel are wrapped in ONE brace group, not two
-        # separate top-level lines. Bash only runs PROMPT_COMMAND (prints
-        # PS1) before reading a NEW top-level command; while a compound
-        # construct (brace group, heredoc, for-loop) is still open, every
-        # line is read via PS2 (blanked at spawn) and PROMPT_COMMAND is
-        # never touched. Keeping the reset inside the same group means it
-        # always runs before any real prompt can print — closes the leak
-        # even for commands that reassign PROMPT_COMMAND itself (conda/
-        # direnv), not just plain `venv`. A naive `;`-join (same idea, no
-        # group) breaks on a trailing `#` comment or a heredoc; the group
-        # doesn't. Doesn't fork, so cd/export/functions still persist; a
-        # bare `exit` inside still kills the shell same as before (handled
-        # by the `pexpect.EOF` branch below).
-        #
-        # `$?` is captured into a variable first, before the reset
-        # assignments run (each has its own exit status). Variable name is
-        # tied to the per-spawn sentinel to avoid colliding with the
-        # command's own variables.
+        # The command and the reset/sentinel share one brace group, not two
+        # top-level lines. Bash runs PROMPT_COMMAND (and prints PS1) only
+        # before reading a new top-level command; inside an open compound
+        # construct every line is read via PS2, which is blanked at spawn.
+        # Keeping the reset in the group means it runs before any real prompt,
+        # even for commands that reassign PROMPT_COMMAND (conda, direnv). A
+        # `;`-join breaks on a trailing `#` comment or a heredoc. The group
+        # does not fork, so cd, export and functions persist; a bare `exit`
+        # still kills the shell (the `pexpect.EOF` branch).
+        # `$?` is captured first, in a variable named from the sentinel so it
+        # cannot collide with the command's own.
         _shell.sendline(
             "{\n"
             f"{command}\n"
@@ -398,21 +284,12 @@ def _clean(text: str) -> str:
 
 
 def _bash_owns_foreground(bash_pid: int, fd: int) -> bool:
-    """The one question that actually matters after a timeout: is bash
-    itself currently reading this pty, or is something else still there?
+    """Is bash itself reading this pty, or is something else?
 
-    This is the AUTHORITATIVE check, not a convenience one. A regex match
-    on accumulated output is not proof bash produced it — confirmed live:
-    a raw-mode program (`less`) that's still fully in control can, while
-    echoing back the very keystrokes our own recovery text sent it (its
-    normal behavior while reading a search pattern), coincidentally
-    reproduce our sentinel string in that echo. `expect()` matches it, and
-    the naive "no exception = recovered" read reports success while `less`
-    is demonstrably still running and still owns the terminal. Trusting
-    that would leave a caller believing the shell is fine when the very
-    next real command would just feed it into the same still-alive `less`.
-    `tcgetpgrp` asks the kernel who currently owns the terminal, which
-    doesn't care what any of them printed or echoed.
+    Authoritative after a timeout: a regex match on output is not proof,
+    because a raw-mode program (`less`) can echo our recovery keystrokes and
+    reproduce the sentinel while still owning the terminal. Asks the kernel who
+    owns the pty's foreground.
     """
     try:
         return os.tcgetpgrp(fd) == os.getpgid(bash_pid)
@@ -421,10 +298,9 @@ def _bash_owns_foreground(bash_pid: int, fd: int) -> bool:
 
 
 def _kill_foreground(bash_pid: int, fd: int) -> bool:
-    """Best-effort SIGKILL of whatever currently owns the tty, if it isn't
-    bash. Used only as a courtesy before abandoning this pty entirely (see
-    `_handle_timeout()`) — NOT relied on to make the existing session safe
-    to keep using afterward. Returns whether a kill was actually sent.
+    """Best-effort SIGKILL of whatever owns the tty if it is not bash. A
+    courtesy before abandoning this pty (see `_handle_timeout()`), not what
+    makes the session safe to reuse. Returns whether a kill was sent.
     """
     try:
         fg_pgid = os.tcgetpgrp(fd)
@@ -437,73 +313,38 @@ def _kill_foreground(bash_pid: int, fd: int) -> bool:
 
 
 def _handle_timeout() -> dict:
-    """A command blew past its timeout. Try Ctrl-C first — the common
-    case, a plain blocking command (`sleep`, `curl`, a stuck loop) with no
-    handler of its own, dies to it immediately and cleanly, exactly as
-    before. If that doesn't BOTH match the sentinel AND leave bash owning
-    the terminal (`_bash_owns_foreground`), do not try to keep salvaging
-    this pty. Confirmed live, twice, why not:
+    """A command exceeded its timeout.
 
-    1. A raw-mode program that survives plain SIGINT (`less`, `vim`, `top`,
-       `psql`, many REPLs — not a `less`-specific quirk, the general case
-       for anything that puts the terminal in raw/cbreak mode) can, while
-       echoing back the very keystrokes our recovery text sends it,
-       coincidentally reproduce the sentinel string in that echo. A bare
-       "no exception raised" read of `expect()` then reports success while
-       that program is demonstrably still running and still owns the
-       terminal — `_bash_owns_foreground()` exists specifically to catch
-       this, by asking the kernel who owns the pty rather than trusting a
-       regex match against accumulated output.
-    2. Once that's caught and the foreground group is force-killed instead,
-       retrying the SAME reset+sentinel send on the SAME pexpect buffer is
-       *still* not reliably safe: confirmed live that a plain follow-up
-       command afterward can come back killed by a signal it had no reason
-       to receive on its own (return_code 130 on a bare `echo`) — a stale,
-       unconsumed byte from the interrupted exchange surfacing on the next
-       real command instead of this one, most likely because many raw-mode
-       programs deliberately disable the terminal's normal signal
-       generation so they can read Ctrl-C as plain input themselves, which
-       breaks the assumption that sending it always produces a clean,
-       one-shot kernel-generated interrupt. That's a pty/line-discipline
-       race, not a "which program is running" problem, and chasing it with
-       more targeted heuristics is exactly the failure mode to avoid —
-       every additional special case just narrows which specific program
-       it protects against, without ever closing the underlying gap.
+    Layer 1: Ctrl-C. A plain blocking command (`sleep`, `curl`) dies to it and
+    the shell carries on with its state. Recovery counts only if the sentinel
+    matches AND bash owns the terminal again (`_bash_owns_foreground`): a
+    raw-mode program (`less`, `vim`, `top`, `psql`, REPLs) can echo our
+    keystrokes back and reproduce the sentinel while still running.
 
-    So: escalation does not try to resume this pexpect session at all. It
-    kills whatever's left as a courtesy, then respawns an entirely fresh
-    shell via `_spawn()` — the exact same, already-proven code path
-    `restart: true` uses. That trades cd/env/background-job continuity
-    away ONLY in the (should be rare) case recovery needed to escalate at
-    all — an explicit, honest tradeoff (`state_reset: true`) rather than a
-    session that merely looks recovered.
+    Layer 2: otherwise kill what is left and respawn a fresh shell via
+    `_spawn()`, the path `restart: true` uses. The old pty is not reused: after
+    a forced kill a stale byte can surface on the next command (exit code 130
+    on a bare `echo`), a line-discipline race no heuristic closes. The result
+    carries `state_reset: true` because cd, env and background jobs are lost.
     """
-    # Only ever called from `_run()`'s `except pexpect.TIMEOUT:` handler,
-    # by which point `_shell` is already known non-None there — but this
-    # function reads the global fresh in its OWN scope, so that narrowing
-    # doesn't carry over. Spelled out here too, same reasoning as `_run()`.
+    # Called from `_run()`'s `except pexpect.TIMEOUT:` handler. Reads the
+    # global fresh, so the None check is repeated for mypy.
     assert _shell is not None
     partial = _clean(_shell.before or "")
     bash_pid, fd = _shell.pid, _shell.child_fd
 
-    # Layer 1: the polite attempt, unchanged from before other than being
-    # gated on ground truth rather than trusted on pattern-match alone.
+    # Layer 1: the polite attempt, gated on ground truth, not the sentinel
+    # match alone.
     try:
         _shell.sendcontrol("c")
         _shell.sendline(
             "{\n"
             f"{_PS1_RESET}; PS2=''; "
-            # 130 via a variable + %d, not a literal digit sequence in the
-            # printf source itself — load-bearing, not style: a shell that
-            # echoes its input back (zsh's non-ZLE reader does, even with
-            # ZLE off; bash's pty session with echo=False does not) would
-            # otherwise let expect() match the sentinel pattern INSIDE that
-            # echo, before this command has even run. Confirmed live: a
-            # hardcoded ":130" here caused exactly that under zsh, matching
-            # on the echoed source and leaving this command's real
-            # execution (and its real completion marker) to bleed into the
-            # NEXT call's capture instead. Mirrors the same %d-not-literal
-            # shape the main per-call path in `_run()` already uses.
+            # 130 comes in through a variable and %d, not as a literal digit
+            # sequence in the printf source: a shell that echoes its input
+            # (zsh's plain reader does) would otherwise let expect() match the
+            # sentinel inside the echoed source, before the command has run.
+            # Same shape as the per-call path in `_run()`.
             f"__rc_{_sentinel}=130; printf '\\n{_sentinel}:%d\\n' $__rc_{_sentinel}\n"
             "}"
         )
@@ -515,10 +356,8 @@ def _handle_timeout() -> dict:
     force_killed = False
     state_reset = False
     if not recovered:
-        # Layer 2: don't keep negotiating with this pty. Kill whatever's
-        # left, then start over completely via the same path `restart`
-        # uses — proven reliable, unconditionally, every time it's been
-        # tested this session.
+        # Layer 2: do not keep negotiating with this pty. Kill what is left and
+        # start over through the path `restart` uses.
         force_killed = _kill_foreground(bash_pid, fd)
         error = _spawn()
         recovered = error is None

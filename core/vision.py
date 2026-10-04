@@ -1,35 +1,21 @@
-"""Ask a question about an image, using your own private vision-capable
-model server.
+"""Ask a question about an image, using your own private vision-capable model
+server.
 
-Same motivation and shape as `text_embeddings.py`: this deliberately calls a
-self-hosted OpenAI-compatible `/v1/chat/completions` endpoint (llama.cpp's
-server, vLLM, LM Studio, ...) instead of Claude's own vision, so images can
-stay on your own local/private compute instead of round-tripping through
-Anthropic's API.
+Calls a self-hosted OpenAI-compatible `/v1/chat/completions` endpoint
+(llama.cpp's server, vLLM, LM Studio, ...) instead of Claude's own vision, so
+images stay on local compute. Same shape as `text_embeddings.py`: it does
+nothing until `url` is set under `[vision]` in config.toml, and the tool is
+declared to Claude either way. Settings are re-read on every call.
 
-It does nothing until `url` is set under `[vision]` in config.toml — the
-tool is still declared to Claude either way (same "disappears gracefully on
-a fresh clone" pattern as `text_embeddings`/`sql_query`). Settings are
-re-read from config.toml on every call rather than cached at import time, so
-editing `url`/`model`/`max_tokens`/`timeout` takes effect on the next call
-with no restart.
+No automatic fallback to Claude's own vision: if the local server is
+unconfigured or unreachable, `_run` returns `{"status": "local_unavailable",
+...}` and stops. Using Claude's vision instead is a conversation-level
+decision, made only after telling the user and getting explicit confirmation,
+because it sends the image to Anthropic's API. The tool description states
+this.
 
-IMPORTANT — no automatic fallback to Claude's own vision lives in this file.
-If the local server isn't configured or isn't reachable, `_run` returns a
-plain `{"status": "local_unavailable", ...}` result and stops there. That is
-intentional: whether to then look at the same image using Claude's own
-native vision is a conversation-level decision, made only after telling the
-user the local server is down and getting explicit confirmation — never
-silently, since that would send an image to Anthropic's API that the user
-may have specifically wanted kept local. See the tool description below,
-which states this expectation directly so it holds even in a fresh session
-that has never read any planning notes about this tool.
-
-Requires:  pip install httpx2       (already pulled in transitively by both
-                                      `anthropic` and `mcp` -- listed explicitly in
-                                      requirements.txt anyway, since this module
-                                      imports it directly rather than relying on
-                                      that transitive pull-in)
+Requires:  pip install httpx2 (also pulled in by `anthropic` and `mcp`; listed
+in requirements.txt because this module imports it directly)
 """
 
 import asyncio
@@ -138,13 +124,11 @@ def _resolve_image(image: str) -> tuple[str, str | tuple[str, str]] | None:
     """Classify an `image` argument and prepare it for the request payload.
 
     Returns (kind, value):
-      - ("url", <the original string>) for http(s)/data: inputs — passed
-        straight through as-is, since llama.cpp's `image_url.url` accepts
-        remote URLs and data URIs natively.
-      - ("b64", (media_type, base64_data)) for a local file — read and
-        encoded here, so it works regardless of whether the target server
-        was started with `--media-path` (this one wasn't).
-    Returns None if a local path doesn't exist.
+      - ("url", <the original string>) for http(s)/data: inputs, passed through
+    as is (llama.cpp's `image_url.url` accepts remote URLs and data URIs).
+      - ("b64", (media_type, base64_data)) for a local file, read and encoded
+    here so it works without `--media-path` on the server.
+    Returns None if a local path does not exist.
     """
     if image.startswith(("http://", "https://", "data:")):
         return ("url", image)
@@ -187,10 +171,8 @@ def _run(tool_input: dict) -> str:
 
     model = tool_input.get("model") or config.get("model")
     max_tokens = tool_input.get("max_tokens") or config.get("max_tokens", 4000)
-    # 180s, not 120s: a real test at max_tokens=4000 used 1536 tokens in 43s
-    # (~35.7 tok/s combined reasoning+generation on this rig) — a call that
-    # actually used the full 4000-token budget would extrapolate to ~110s,
-    # too close to a 120s ceiling for comfort. 180s leaves real headroom.
+    # 180s, not 120s: 4000 tokens takes about 110s at the ~35.7 tok/s measured
+    # here (reasoning plus generation), too close to a 120s ceiling.
     timeout = float(config.get("timeout", 180))
 
     kind, value = resolved

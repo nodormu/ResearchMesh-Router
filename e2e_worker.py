@@ -1,18 +1,14 @@
 """A stand-in ResearchMesh worker: one `delegate` tool, over stdio.
 
-Launched by `e2e_test.py`; not part of the app. Faithful where it matters —
-the same tool name, and the *same description text* in every instance, which is
-exactly the collision a real fleet produces. `mcp_server.py` in ResearchMesh
-hardcodes a single `_DELEGATE_DESCRIPTION` constant, so two real workers are
-indistinguishable in precisely this way.
+Launched by `e2e_test.py`; not part of the app. Every instance has the same
+tool name and the same description text, which is the collision a real fleet
+produces (`mcp_server.py` in ResearchMesh hardcodes one
+`_DELEGATE_DESCRIPTION`). It makes no Anthropic call and does not start a real
+worker's configured MCP servers (a Unity relay, an Unreal bridge), which a test
+should not launch.
 
-It makes no Anthropic call of its own, so the test costs nothing on the worker
-side, and it does not start ResearchMesh's own configured MCP servers — pointing
-the test at a real worker would launch whatever that machine's config.toml
-declares (a Unity relay, an Unreal bridge), which a test has no business doing.
-
-The 2s sleep is load-bearing for the fan-out half of the test: two of these run
-sequentially take ~4s, concurrently ~2s.
+The 2s sleep matters for the fan-out check: two workers take ~4s sequentially
+and ~2s concurrently.
 """
 
 import asyncio

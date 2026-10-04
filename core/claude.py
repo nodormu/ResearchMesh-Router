@@ -8,26 +8,18 @@ from anthropic import Anthropic, BadRequestError
 from anthropic.types import Message
 from anthropic.types.beta import BetaMessage
 
-# core/claude.py -> parent is core/, parent.parent is the repo root — same
-# resolution main.py/core/vision.py/core/speak.py use for their own config
-# path, so this doesn't drift if the repo is ever moved. Ported from
-# ResearchMesh (see adding-model-command-to-swap-between-Anthropic-models.md
-# in ResearchMesh's own /memories for the full design history) — this affects
-# only the ROUTER's OWN reasoning model (self.claude_service below), never a
-# connected worker's model.
+# core/claude.py -> parent is core/, parent.parent is the repo root: the same
+# resolution main.py, core/vision.py and core/speak.py use for the config path.
+# Affects only the router's own reasoning model, never a worker's.
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.toml"
 
 
 def load_claude_models() -> list[str]:
-    """Read config.toml's [claude] claude_models array, fresh on every call —
-    same "re-read, don't cache at import time" convention as core/vision.py,
-    core/speak.py, core/text_embeddings.py. This is what lets /model (see
-    core/cli.py) pick up a hand-edit to config.toml without an app restart.
+    """Read config.toml's [claude] claude_models array, fresh on every call so
+    `/model` (core/cli.py) picks up a hand-edit without a restart.
 
-    Falls back to a single-entry ["claude-sonnet-5"] list if the key is
-    missing/empty/the file doesn't exist — matches main.py's own fallback for
-    the same key, so a fresh clone still starts up fine before anyone has
-    edited config.toml at all.
+    Falls back to ["claude-sonnet-5"] if the key or file is missing or empty,
+    matching main.py.
     """
     try:
         with open(_CONFIG_PATH, "rb") as f:
@@ -43,16 +35,11 @@ def load_claude_models() -> list[str]:
 
 
 def resolve_model_swap(models: list[str], arg: str) -> str | None:
-    """Match `arg` (from `/model swap <arg>`) against `models`.
+    """Match `arg` from `/model swap <arg>` against `models`.
 
-    `arg` may be a 1-based index into the list (as shown by `/model`'s own
-    listing) or the model name itself, matched case-insensitively since
-    model ids are conventionally lowercase-hyphenated already — this only
-    forgives typing, never introduces ambiguity beyond what plain case
-    already would. Returns the canonical (as-configured) name, or None if
-    `arg` matches nothing — the caller is responsible for the reject
-    message, this function only ever returns a name from `models` or None,
-    never raises, so a bad /model swap can't be a crash.
+    `arg` is a 1-based index into the list `/model` shows, or a model name
+    matched case-insensitively. Returns the name as configured, or None; never
+    raises, so a bad swap cannot crash. The caller prints the rejection.
     """
     arg = arg.strip()
     if arg.isdigit():
@@ -86,16 +73,11 @@ _DEFAULT_TTL_HOURS = 24
 
 
 def fetch_live_models(client: Anthropic | None = None) -> list[str]:
-    """Live-scan Anthropic's /v1/models and return one id per model family,
-    newest-first by release date — except the sonnet family (if present) is
-    always moved to the front, matching Anthropic's own documented default
-    recommendation.
+    """Live-scan /v1/models and return one id per model family, newest first by
+    release date, with the sonnet family moved to the front.
 
-    Family = the alpha token right after "claude-" (sonnet/opus/haiku/...,
-    whatever the API actually returns — nothing here hardcodes a family
-    list). Raises whatever the SDK raises (auth error, timeout, connection
-    error) on failure; callers decide the fallback, this function never
-    guesses at one.
+    Family is the alpha token after "claude-"; no family list is hardcoded.
+    Raises whatever the SDK raises on failure; the caller chooses the fallback.
     """
     if client is None:
         client = Anthropic(timeout=_SCAN_TIMEOUT_SECONDS)
@@ -128,41 +110,22 @@ def refresh_claude_models(
     config_path: Path | None = None,
     fetch_fn: Callable[[], list[str]] | None = None,
 ) -> list[str]:
-    """The actual /model data source: TTL-gated live scan with config.toml as
-    a durable cache, never a hardcoded hand-typed array.
+    """The /model data source: a TTL-gated live scan with config.toml as the
+    cache.
 
-    - If config.toml's [claude] claude_models_checked_at is younger than
-      model_scan_ttl_hours (default 24), skip the network call entirely and
-      just return the cached claude_models array — most process starts hit
-      this branch, no API call at all.
-    - If the cache is stale (or `force=True`), attempt one live scan via
-      fetch_fn (defaults to fetch_live_models). On success, claude_models AND
-      claude_models_checked_at are updated together, atomically, in
-      config.toml. On ANY failure (bad/placeholder key, offline, timeout,
-      rate limit) nothing is written — config.toml is left exactly as it
-      was, and the old cached array is returned as-is for this process.
-      This is deliberate: it's what lets CI's smoke_test.py spawn
-      mcp_server.py (ResearchMesh) — or, here, this repo's own smoke_test.py —
-      with a placeholder API key and never have that touch config.toml or
-      need real network access — it always just reads whatever was last
-      committed.
-    - Falls back to a single-entry ["claude-sonnet-5"] list only if
-      config.toml itself is missing/unreadable AND there's nothing to scan
-      with — the same last-resort default main.py has always had.
+    - If claude_models_checked_at is younger than model_scan_ttl_hours (default
+    24), return the cached claude_models array with no network call.
+    - Otherwise (or with `force=True`) try one scan via fetch_fn. On success
+    claude_models and claude_models_checked_at are written together. On any
+    failure (placeholder key, offline, timeout, rate limit) nothing is written
+    and the cached array is returned, so a smoke test with a placeholder key
+    never touches config.toml.
+    - Falls back to ["claude-sonnet-5"] only if config.toml is unreadable and
+    there is nothing to scan with.
 
-    config_path and fetch_fn exist purely for testability (same
-    dependency-injection shape as fetch_live_models()'s own `client`
-    parameter) — every real caller (main.py) uses the defaults, which are
-    the real config.toml and the real live Anthropic scan. See
-    smoke_test.py's check_model_refresh() for the fake-client-driven
-    regression coverage this enables with no real network or file mutation.
-
-    Reads use stdlib tomllib (same as load_claude_models() — no extra
-    dependency, always available). tomlkit (comment-preserving write) is
-    only imported lazily, right before the actual write, and only reached
-    after a live scan has already succeeded — so a scan that fails (as it
-    always does against CI's placeholder key) never even touches tomlkit,
-    exactly like every other per-tool backing in this project.
+    `config_path` and `fetch_fn` exist for tests (see check_model_refresh in
+    smoke_test.py). Reads use stdlib tomllib; tomlkit (comment-preserving
+    write) is imported only just before a write that follows a successful scan.
     """
     config_path = config_path or _CONFIG_PATH
     fetch_fn = fetch_fn or fetch_live_models
@@ -194,19 +157,17 @@ def refresh_claude_models(
     try:
         import tomlkit
     except ImportError:
-        # Scan succeeded but we can't persist it without tomlkit installed —
-        # still return the fresh result for this process, just don't cache it.
+        # Scan succeeded but tomlkit is missing: return the fresh result, do
+        # not cache it.
         return fresh_models
 
     text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
     doc = tomlkit.parse(text) if text else tomlkit.document()
     if "claude" not in doc:
         doc["claude"] = tomlkit.table()
-    # tomlkit's own stubs type doc["claude"] as `Item | Container`, which
-    # mypy sees as not indexable — it is at runtime (this is tomlkit's own
-    # documented usage pattern; verified correct by round-tripping a real
-    # write/read against config.toml above). Narrow the type explicitly
-    # rather than silence the whole line.
+    # tomlkit's stubs type doc["claude"] as `Item | Container`, which mypy sees
+    # as not indexable; it is at runtime. Narrow the type instead of silencing
+    # the line.
     claude_table = doc["claude"]
     assert isinstance(claude_table, tomlkit.items.Table)
     claude_table["claude_models"] = fresh_models
@@ -219,78 +180,46 @@ def refresh_claude_models(
     return fresh_models
 
 
-# Betas sent on every request. Empty as of the migration to
-# `computer_toolset_20260801` (see core/computer.py) — that toolset ships as a
-# stable, non-beta feature, unlike the older `computer_20251124` single-tool
-# schema this project used to declare, which needed the
-# `computer-use-2025-11-24` header unconditionally. Still posting to
-# `client.beta.messages.create` rather than reverting to the plain endpoint:
-# the beta Messages endpoint is a superset of the stable one (nothing changes
-# shape by staying on it with an empty `betas` list), and staying put here
-# keeps this migration scoped to the tool schema itself rather than also
-# touching the request-endpoint choice in the same change.
+# Betas sent on every request. Empty: `computer_toolset_20260801` is a stable
+# feature, so no header is needed. Requests still go to
+# `client.beta.messages.create`, a superset of the stable endpoint.
 #
-# A *worker's* beta-gated tools remain entirely the worker's problem — it
-# makes its own API call with its own headers, and nothing about a worker's
-# schemas reaches this request.
+# A worker's beta-gated tools are the worker's concern; it makes its own API
+# call.
 BETAS: list[str] = []
 
-# The beta endpoint returns BetaMessage, which is NOT a subclass of Message, so
-# the response-vs-raw-content checks below must accept both. Testing only
-# `Message` would silently stuff the response object into `content` instead of
-# its blocks — the subtlest trap in this file, and the reason `_RESPONSE_TYPES`
-# exists rather than a bare isinstance.
+# The beta endpoint returns BetaMessage, which does not subclass Message, so
+# the response-vs-raw-content checks must accept both. That is why
+# `_RESPONSE_TYPES` exists: checking only `Message` would put the response
+# object into `content` instead of its blocks.
 _RESPONSE_TYPES = (Message, BetaMessage)
 
 
-# Anthropic's own fixed wording for "this model can't use one of the tool
-# types you declared" — confirmed live, byte-identical, across every model/
-# tool pairing this project has hit so far (Opus 5.5 + computer_20251124,
-# Haiku 4.5 + computer_toolset_20260801, ...). Captures the comma-separated
-# type list between the fixed phrase and the following period; the response
-# always continues with a "Did you mean one of ..." suggestion list that this
-# deliberately does NOT try to parse — that list is what IS supported, not
-# what to strip, and the whole point of the retry loop below is to discover
-# incompatibility empirically rather than hand-maintain either list.
+# Anthropic's fixed wording for "this model can't use one of the tool types you
+# declared". Captures the comma-separated type list after the fixed phrase. The
+# "Did you mean..." list that follows is not parsed: it names what is
+# supported, and the retry loop discovers incompatibility empirically.
 _UNSUPPORTED_TOOL_TYPES_RE = re.compile(r"does not support tool types: ([^.]+)\.")
 
-# Bounds the retry-after-stripping loop in `chat()` below. Every real case
-# seen so far resolves in one retry (one BadRequestError names every
-# offending type in a single message, not one at a time) — this only guards
-# against a hypothetical model/API change that reports them one at a time,
-# so it never turns into a silent infinite loop chewing through the whole
-# tools array one entry at a a time on some unrelated persistent failure.
+# Bounds the retry-after-stripping loop in `chat()`. One BadRequestError names
+# every offending type, so one retry normally suffices; the bound only guards
+# against an API that reports them one at a time.
 _MAX_UNSUPPORTED_TOOL_RETRIES = 5
 
 
 class Claude:
     """Thin Anthropic SDK wrapper.
 
-    Posts to `client.beta.messages.create` — a deliberate holdover from when
-    the local `computer` tool needed a beta header (see BETAS above, now
-    empty). Kept rather than reverted to the plain endpoint because the beta
-    endpoint is a strict superset; top-level `cache_control` works on both, so
-    prompt caching is unaffected either way.
+    Posts to `client.beta.messages.create` (see BETAS); top-level
+    `cache_control` works on both endpoints, so prompt caching is unaffected.
 
-    **Per-model tool-compatibility handling.** Not every Anthropic-defined
-    tool type works on every model — confirmed live: Claude Haiku 4.5 flatly
-    rejects `computer_toolset_20260801` (a real, permanent model limitation,
-    not a schema bug — Haiku doesn't support the older `computer_20251124`
-    either; `computer_20250124` is accepted but deliberately not declared).
-    Declaring an unsupported tool type fails the WHOLE request, not just the
-    incompatible tool, so a `/model swap` to an incompatible model would
-    otherwise 400 on every single turn until swapped back — including turns
-    that never touch the offending tool at all.
-
-    `_unsupported_by_model` remembers what has been discovered incompatible,
-    per model name, for the life of this process (reset only by restarting —
-    `/model swap` itself never clears it, so swapping back to a
-    previously-bad model doesn't need rediscovery). `chat()` proactively
-    filters against it before every request, and reactively grows it by
-    parsing a live "does not support tool types: ..." 400 the first time a
-    given model/tool pairing is actually tried — no hand-maintained
-    compatibility table to fall out of date, since it adapts to whatever the
-    real API says, for any current or future tool.
+    Per-model tool compatibility: a tool type the model rejects (e.g. Haiku 4.5
+    and `computer_toolset_20260801`) fails the whole request, so after a
+    `/model swap` every turn would 400 even without touching that tool.
+    `_unsupported_by_model` remembers rejected types per model for the life of
+    the process; `chat()` filters against it before each request and adds to it
+    by parsing the "does not support tool types: ..." 400 the first time a
+    pairing is tried. `/model swap` never clears it.
     """
 
     def __init__(self, model: str):
@@ -344,55 +273,38 @@ class Claude:
         tools=None,
         thinking=False,
     ) -> BetaMessage:
-        # No temperature / top_p / top_k. Current models (Sonnet 5, Opus 5, Opus
-        # 4.7+) reject non-default sampling parameters with a 400, and the only
-        # value they accept is the default — so sending it can never do anything
-        # except fail. Steer behaviour with the system prompt instead.
+        # No temperature, top_p or top_k: current models reject non-default
+        # sampling parameters with a 400. Steer behaviour with the system
+        # prompt.
         params = {
             "model": self.model,
-            # Shared between adaptive thinking and the visible reply/tool_use
-            # (no separate thinking budget on these models). 20000 rather
-            # than the old 8000: a single large `create` tool call (e.g. a
-            # whole new source file) or a hard /think turn could both blow
-            # past 8000 and get cut off by max_tokens mid-tool_use, which
-            # left an unanswered tool_use block in history and poisoned
-            # every later turn — ported from ResearchMesh core/claude.py,
-            # see that repo's dev log for the full incident. 20000 stays
-            # comfortably under the SDK's own ~21,333-token non-streaming
-            # ceiling (client.messages.create raises "Streaming is required
-            # for operations that may take longer than 10 minutes" above
-            # that, since self.client has no explicit timeout override) —
-            # so this needed no other change. Deliberately NOT going higher
-            # / switching to streaming: this repo's whole response-handling
-            # shape (response.content/stop_reason/usage read as one static
-            # object throughout core/chat.py) would need real rework to
-            # consume streamed deltas.
+            # Shared by adaptive thinking and the visible reply or tool_use.
+            # 20000 keeps a single large tool call (a whole new file) from
+            # being cut off by max_tokens mid-tool_use, and stays under the
+            # SDK's ~21,333-token ceiling for non-streaming calls (above it
+            # `messages.create` raises "Streaming is required"). Streaming is
+            # not used: core/chat.py reads `response.content`, `stop_reason`
+            # and `usage` as one static object.
             "max_tokens": 20000,
             "messages": messages,
             "betas": BETAS,
-            # Prompt caching. Top-level cache_control auto-places the breakpoint on
-            # the last cacheable block, so each request re-reads the stable prefix
-            # (tools -> system -> prior turns, in render order) at ~0.1x input price
-            # instead of full. Writes cost ~1.25x, so it breaks even on the second
-            # request — and Chat's agentic loop makes up to MAX_TOOL_ITERATIONS
-            # requests per user turn, each resending the whole conversation.
-            #
-            # Silent-failure notes: a prefix under the model's minimum (1024 tokens
-            # on Sonnet 5) simply isn't cached, with no error. And any byte change
-            # early in the prefix invalidates everything after it — so keep
-            # SYSTEM_PROMPT static and the tool list in a stable order. That second
-            # point is sharper here than in ResearchMesh: the tool list is built
-            # from live workers, so a worker dropping out mid-session reshapes the
-            # prefix and costs the cache. Verify with CLAUDE_SHOW_USAGE=1.
+            # Prompt caching: top-level cache_control puts the breakpoint on
+            # the last cacheable block, so each request re-reads the stable
+            # prefix (tools, system, prior turns) at ~0.1x input price. Writes
+            # cost ~1.25x, so it pays off from the second request; Chat's loop
+            # makes up to MAX_TOOL_ITERATIONS per user turn.
+            # A prefix under the model's minimum (1024 tokens on Sonnet 5) is
+            # not cached, with no error. Any byte change early in the prefix
+            # invalidates everything after it, so SYSTEM_PROMPT stays static
+            # and the tool list stable; a worker dropping out reshapes the tool
+            # list. Verify with CLAUDE_SHOW_USAGE=1.
             "cache_control": {"type": "ephemeral"},
         }
 
-        # Adaptive thinking replaces the old fixed budget. The 4.5-era form
-        # {"type": "enabled", "budget_tokens": N} now returns a 400 on Sonnet 5
-        # and Opus 5 / 4.7+, so there is no thinking_budget to pass — Claude
-        # decides how much to think per request. If you ever want to bias that,
-        # the knob is output_config={"effort": "low"|"medium"|"high"|...}, which
-        # controls depth rather than a token count.
+        # Adaptive thinking: the 4.5-era {"type": "enabled", "budget_tokens":
+        # N} form returns a 400 on Sonnet 5 and Opus 5 / 4.7+, so there is no
+        # thinking_budget. To bias depth use output_config={"effort":
+        # "low"|"medium"|"high"|...}.
         if thinking:
             params["thinking"] = {"type": "adaptive"}
 
@@ -406,26 +318,21 @@ class Claude:
         if system:
             params["system"] = system
 
-        # Beta endpoint, not client.messages.create — see BETAS above.
+        # Beta endpoint, not client.messages.create (see BETAS).
         #
-        # Retries in place, not by raising for core/chat.py to handle: an
-        # unsupported-tool-type 400 is a fundamentally different failure from
-        # everything _call_chat_with_auto_repair there already knows how to
-        # fix (poisoned conversation history) — resolving it here means
-        # core/chat.py never even sees this class of error, and its existing
-        # repair logic stays untouched and focused on what it already does.
+        # Retries here instead of raising for core/chat.py: an
+        # unsupported-tool-type 400 is unrelated to the poisoned-history
+        # failures `_call_chat_with_auto_repair` repairs, so chat.py never sees
+        # it.
         last_error: BadRequestError | None = None
         for _ in range(_MAX_UNSUPPORTED_TOOL_RETRIES):
             try:
                 return self.client.beta.messages.create(**params)
             except BadRequestError as e:
                 last_error = e
-                # `e.body` is the already-parsed error payload (a plain
-                # dict) — prefer it over `str(e)`/`e.message`, both of which
-                # are the same "Error code: 400 - {...}" wrapped
-                # representation of this same dict. Falling back to `str(e)`
-                # only if the body ever comes back in an unexpected shape
-                # (defensive, not expected to trigger in practice).
+                # `e.body` is the parsed error payload; prefer it to `str(e)`,
+                # which wraps the same dict. Falls back to `str(e)` if the body
+                # has an unexpected shape.
                 body = getattr(e, "body", None)
                 text = (
                     body.get("error", {}).get("message", "")
@@ -440,10 +347,9 @@ class Claude:
                     t.get("type") for t in params["tools"] if t.get("type")
                 }
                 if not still_present:
-                    # The error mentions a type we've already stripped, or
-                    # one that was never in this request — re-raising avoids
-                    # an infinite loop on a message this regex matched but
-                    # whose real cause is something else entirely.
+                    # The error names a type already stripped or never in this
+                    # request. Re-raise: retrying would loop on a message the
+                    # regex matched for another cause.
                     raise
                 self._unsupported_by_model.setdefault(self.model, set()).update(
                     still_present
@@ -454,9 +360,8 @@ class Claude:
                     f"{sorted(still_present)} — withheld for the rest of "
                     "this session on this model, retrying this request..."
                 )
-        # Exhausted the retry budget without success — surface the real
-        # underlying error explicitly rather than a bare `raise`, which would
-        # have no active exception context out here and would raise a
-        # confusing RuntimeError instead of the actual cause.
+        # Retry budget exhausted: raise the underlying error explicitly; a bare
+        # `raise` has no active exception here and would raise a confusing
+        # RuntimeError.
         assert last_error is not None
         raise last_error

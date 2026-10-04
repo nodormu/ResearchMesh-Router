@@ -7,71 +7,35 @@ from mcp.types import TextContent
 
 from core import local_tools, processes
 
-# Names already spoken for by the router's own local tools, for
-# ToolManager.build's collision guard below. A client TOOLSET entry (e.g.
-# computer.COMPUTER_TOOL) carries no "name" of its own — its members are
-# generated server-side from the dated `type` — so this has to filter rather
-# than assume every local_tools.TOOLS entry has a "name" key. Computed once at
-# import time since local_tools.TOOLS is itself a fixed module-level constant.
+# Names taken by this router's local tools, for the collision guard in
+# ToolManager.build. A toolset entry has no "name", so entries without one are
+# skipped.
 _LOCAL_TOOL_NAMES = {t["name"] for t in local_tools.TOOLS if "name" in t}
 from core.claude import Claude
 from core.claude_learned_schemas import SHELL_EXECUTABLE
 from core.tools import ToolIndex, ToolManager, Worker
 
-# Human-facing name of the interpreter the LOCAL `bash` tool actually runs
-# commands through (e.g. "bash", "zsh") — resolved once at import time from
-# SHELL_EXECUTABLE (core/claude_learned_schemas.py, copied verbatim from
-# ResearchMesh, including why that constant isn't named BASH_SHELL).
-# Interpolated into SYSTEM_PROMPT below. Deliberately not importing SH_TARGET
-# here the way ResearchMesh's own chat.py does: that fact is only relevant to
-# writing a standalone #!/bin/sh script, which is a poor match for how this
-# router's own bash gets used (quick local bookkeeping, not primary work —
-# see SYSTEM_PROMPT's own guidance below), so it isn't worth the extra
-# prompt real estate here.
+# Name of the interpreter the local `bash` tool runs commands through (e.g.
+# "bash", "zsh"); interpolated into SYSTEM_PROMPT.
 _SHELL_EXECUTABLE_NAME = Path(SHELL_EXECUTABLE).name
 
-# Raised 30 -> 75 -> 200 across this project's history (30->75 happened
-# on the original Linux ResearchMesh client, ported here — see that
-# repo's researchmesh_client_dev_log.md for the incident: a single turn
-# doing iterative debugging against a buggy third-party MCP server
-# chewed through 20+ iterations just fixing/working around that
-# server's own bugs). 200 is a safety-valve headroom increase, not a
-# response to a specific new incident — it exists so a long, genuinely
-# productive turn doesn't get cut off mid-task purely on iteration
-# count. Counts rounds of the chat loop (each of which can batch
-# several tool_use calls in one response), not a literal per-tool-call
-# counter, and resets every new user message, never across a whole
-# conversation.
+# Cap on chat-loop rounds per user message. A round can batch several tool_use
+# calls. Resets every user message.
 MAX_TOOL_ITERATIONS = 200
 
-# Separate, small grace budget for continuations the API contract makes
-# mandatory (an open pause_turn; a server_tool_use left dangling by a mixed
-# tool_use response) — MAX_TOOL_ITERATIONS alone must never block these.
-# 5 matches Anthropic's own reference example's `max_continuations` default.
-# See Chat._finalize_turn for what happens if even this runs out. Ported
-# from ResearchMesh core/chat.py (commit 672aae1) — same bug class is
-# reachable here too since this router also exposes web_search/web_fetch
-# as real Anthropic server tools (core/claude_learned_schemas.py).
+# Extra rounds for continuations the API requires: an open pause_turn, or a
+# server_tool_use left dangling by a mixed tool_use response. See
+# Chat._finalize_turn for what happens when this runs out.
 EXTRA_CONTINUATION_LIMIT = 5
 
-# Set CLAUDE_SHOW_USAGE=1 to print token and cache counters per request. Prompt
-# caching fails *silently* (a too-short prefix or a changed byte early in the
-# prefix just means no hit, with no error), so this is the only way to confirm
-# the cache_control breakpoint in core/claude.py is actually paying off.
+# Set CLAUDE_SHOW_USAGE=1 to print token and cache counters per request. A
+# cache miss raises no error, so this is how to check the cache_control
+# breakpoint in core/claude.py.
 SHOW_USAGE = os.getenv("CLAUDE_SHOW_USAGE") == "1"
 
-# Sent as the `system` parameter on every request.
-#
-# This prompt carries two facts at once, and both are things Claude cannot infer
-# from the schemas. First, the tool list is split across machines: some tools run
-# *here* and the rest run on workers elsewhere, and nothing in a tool definition
-# says which. Second, the workers are separate computers — left to the schemas
-# alone the model treats the whole fleet as one, reading a path from one worker
-# and writing it on another.
-#
-# Before local tools were added this prompt could open with the much stronger
-# "you have no tools of your own". That sentence is now false, and the split
-# below replaces it: the namespacing is what tells local from remote apart.
+# Sent as the `system` parameter on every request. States what the schemas
+# cannot: which tools run here and which on workers, and that workers are
+# separate computers.
 SYSTEM_PROMPT = f"""\
 You are the router in a command-line client. You have two kinds of tools, and
 telling them apart is the first thing to get right on every call.
@@ -217,11 +181,8 @@ from that list, no matter how obvious a name looks — the user names the exact 
 for every real task, every time.
 """
 
-# Appended to SYSTEM_PROMPT on a /dagent turn, where the local tools have been
-# withheld from `tools` entirely. Without this the prompt above still describes
-# local tools by name, and the model spends the turn reasoning about why `bash`
-# is missing. Cheap to add: changing the tool list has already cost the cached
-# prefix for this request, so the extra bytes are free.
+# Appended to SYSTEM_PROMPT on a /dagent turn, where local tools are withheld
+# from `tools`; without it the prompt still names tools the model cannot call.
 _DELEGATE_ONLY_SUFFIX = """
 
 THIS TURN ONLY: the local tools described above are not available to you. Every
@@ -232,11 +193,10 @@ plainly rather than approximating it with a tool that is not the right one.
 
 
 def _block_field(block, name: str):
-    """Read a field off a content block that may be an SDK object or a dict.
+    """Read a field from a content block that may be an SDK object or a dict.
 
-    Assistant turns hold the SDK's own block objects (straight off
-    `response.content`); the tool_result turns we build ourselves are plain
-    dicts. Anything walking the whole conversation has to cope with both.
+    Assistant turns hold SDK objects; tool_result turns built here are plain
+    dicts.
     """
     if isinstance(block, dict):
         return block.get(name)
@@ -244,39 +204,14 @@ def _block_field(block, name: str):
 
 
 def _orphaned_tool_uses(messages) -> list[str]:
-    """tool_use ids that never got a result block — the poisoned-session check.
+    """tool_use ids that never got a result block.
 
-    The API requires every tool_use block to be answered in the *immediately
-    following* message. One that isn't doesn't just break the turn it happened
-    in: the block stays in the history for the life of the process, so every
-    later request fails the same way, however many turns later. That failure
-    reads as "it started 400ing and won't stop", which is very hard to tell
-    from a context overflow without looking.
-
-    Covers both flavors the API can leave dangling, not just the client-tool
-    one:
-      - a plain client `tool_use` block, answered by a `tool_result` block.
-      - a `server_tool_use` (or an MCP-connector `mcp_tool_use`) block,
-        answered by a tool-specific result block instead — e.g.
-        `web_search_tool_result`, `web_fetch_tool_result`. This router
-        exposes both as real Anthropic server tools (see
-        core/claude_learned_schemas.py), so this is a real, reachable case,
-        not a theoretical one. A dangling one is just as poisonous: the
-        assistant turn never closed, so the next request 400s the same way
-        a missing client tool_result does. Matched generically by suffix
-        (`_tool_use` / `_tool_result`) rather than a hardcoded list of
-        current tool names, so a future server tool is covered without
-        editing this function again.
-
-    Both flavors pair up by the same id field regardless of which specific
-    block type is involved — confirmed against Anthropic's own docs: "A
-    server_tool_use block and its result block pair up by tool_use_id, not
-    by position."
-
-    `Chat._finalize_turn` exists to make this list empty by the time any
-    turn ends; this is how you find out it didn't. Ported from ResearchMesh
-    core/chat.py (commit 672aae1) — see that repo's dev log for the full
-    production-error history this closes out.
+    The API requires each tool_use to be answered in the next message; an
+    unanswered one fails every later request. Covers client `tool_use`
+    (answered by `tool_result`) and server-flavored
+    `server_tool_use`/`mcp_tool_use` (answered by a type-specific result
+    block). Pairs by id and matches by the `_tool_use`/`_tool_result` suffix,
+    so new server tools need no edit here.
     """
     answered: set[str] = set()
     issued: list[str] = []
@@ -300,15 +235,10 @@ def _orphaned_tool_uses(messages) -> list[str]:
 
 
 def _classify_orphans(messages) -> tuple[list[str], list[str]]:
-    """Split `_orphaned_tool_uses`'s output by whether each id is mechanically
-    fixable or not.
+    """Split `_orphaned_tool_uses` into (client_ids, server_ids).
 
-    A plain client `tool_use` block can always be closed out with a synthetic
-    error `tool_result` — that's what makes it "client-flavored" here. A
-    `server_tool_use`/`mcp_tool_use` block (web_search, web_fetch, an MCP
-    connector tool) cannot: the API expects a type-specific result block
-    (`web_search_tool_result`, etc.) that this app never had the real data
-    for, since the server ran it, not us. Returns (client_ids, server_ids).
+    A client `tool_use` can be closed with a synthetic error `tool_result`. A
+    server-flavored block cannot: its result block was never ours to build.
     """
     ids = _orphaned_tool_uses(messages)
     if not ids:
@@ -333,13 +263,10 @@ def _classify_orphans(messages) -> tuple[list[str], list[str]]:
 
 
 def _duplicate_tool_result_ids(messages) -> dict[str, int]:
-    """tool_use_ids answered by MORE than one tool_result-family block.
+    """tool_use ids answered by more than one tool_result-family block, as {id:
+    count}.
 
-    The literal API error is `invalid_request_error: ... each tool_use must
-    have a single result. Found multiple tool_result blocks with id: <id>`
-    — confirmed hit for real in production, on ResearchMesh (this router's
-    sibling client, same core/chat.py lineage before this port). Returns
-    {id: count}.
+    The API rejects these: `each tool_use must have a single result`.
     """
     counts: dict[str, int] = {}
     for message in messages:
@@ -358,15 +285,10 @@ def _duplicate_tool_result_ids(messages) -> dict[str, int]:
 
 
 def _dedupe_duplicate_tool_results(messages) -> int:
-    """Mutates `messages` in place: for any tool_use_id with more than one
-    tool_result-family block answering it, keep only the FIRST one seen (in
-    message order — the real one from genuine tool execution) and drop the
-    rest (synthetic duplicates from the now-fixed iteration-cutoff bug, or
-    any other stray duplicate).
+    """Remove duplicate tool_result blocks in place, keeping the first per id.
+    Returns the count removed.
 
-    Removes just the offending blocks from whichever message's content list
-    holds them, not whole messages — never a bulk deletion. Returns how many
-    blocks were removed.
+    Drops blocks, never messages.
     """
     dup_counts = _duplicate_tool_result_ids(messages)
     if not dup_counts:
@@ -393,15 +315,11 @@ def _dedupe_duplicate_tool_results(messages) -> int:
 
 
 def _excise_dangling_blocks(messages, ids: set[str]) -> int:
-    """Mutates `messages` in place: removes any block whose `id` is in `ids`
-    — used only for a `server_tool_use`/`mcp_tool_use` orphan, where no
-    synthetic result block satisfies the API's schema for that tool type.
+    """Remove blocks whose `id` is in `ids`, in place. Returns the count
+    removed.
 
-    Removes only the specific dangling block(s), never the message that
-    holds them (any other content in that message — text, other blocks — is
-    kept) and never any other message. This is the minimal possible repair:
-    contrast with wiping a turn or a conversation, neither of which this file
-    does anywhere. Returns how many blocks were removed.
+    Used for server-flavored orphans, which no synthetic result can satisfy.
+    The message holding a block is kept.
     """
     if not ids:
         return 0
@@ -424,40 +342,14 @@ def _excise_dangling_blocks(messages, ids: set[str]) -> int:
 def _answer_orphaned_client_tool_uses(
     messages, client_ids: list[str], content: str
 ) -> None:
-    """Mutates `messages` in place: answers each id in `client_ids` with a
-    synthetic error `tool_result`, placed so it is genuinely part of the
-    message immediately following the specific message that holds that
-    tool_use — never simply appended to the tail of `messages`.
+    """Answer each id in `client_ids` with a synthetic error `tool_result`, in
+    place.
 
-    Ported from ResearchMesh core/chat.py — same underlying bug found and
-    fixed there: appending to the tail (the previous behavior here too, via
-    `claude_service.add_user_message`) is only correct if the orphan happens
-    to already be the very last thing in the conversation. It silently stops
-    being correct the moment anything else has already been appended after
-    the orphaning message — most commonly a plain new user query, added by
-    `run()`'s own next call before this repair ever runs. Confirmed live in
-    production on ResearchMesh (this router's sibling client, same
-    core/chat.py lineage): the repair ran, reported success ("answered 1
-    orphaned tool_use block"), and the retried request 400'd on the exact
-    same id it had supposedly just answered — because the synthetic result
-    landed one message too late, still leaving the tool_use followed by a
-    plain user-text message instead of its own answer. Reproduced exactly
-    outside production too (`_orphaned_tool_uses` came back empty after
-    that "successful" repair — it only checks "answered somewhere later,"
-    not the API's actual stricter "immediately after" rule, which is why
-    the old code believed it had fixed something it hadn't).
-
-    If the message right after the orphaning one is already a `user`
-    message, the synthetic result(s) are merged into the FRONT of its
-    existing content (mixing tool_result blocks with other content in one
-    user turn is a normal, documented shape) — this also avoids ever
-    creating two consecutive `user`-role messages. Only if there is no
-    following message at all is a new one inserted, matching the original
-    behavior for the case it was actually correct for.
-
-    Groups ids by which message actually holds them (usually one, but not
-    guaranteed) and processes messages back-to-front so an earlier
-    insertion never shifts the index of a later one out from under it.
+    The result goes in the message immediately after the one holding the
+    tool_use, which is what the API checks; appending to the end is wrong once
+    anything follows. A following `user` message gets the results merged at the
+    front of its content; otherwise a new message is inserted. Messages are
+    processed back to front so insertions do not shift later indexes.
     """
     if not client_ids:
         return
@@ -499,11 +391,8 @@ def _answer_orphaned_client_tool_uses(
 def _approx_size(messages) -> tuple[int, int]:
     """(message count, character count) for the conversation.
 
-    Deliberately a character count rather than a real token count:
-    `count_tokens` cannot measure this conversation at all, because
-    `web_search`/`web_fetch` are server tools and that endpoint rejects them
-    outright. Roughly 3-4 characters per token is close enough to tell "nowhere
-    near the window" from "at it", which is the only question being asked here.
+    Characters, not tokens: `count_tokens` rejects the server tools
+    (`web_search`, `web_fetch`) this conversation contains.
     """
     chars = 0
     for message in messages:
@@ -535,15 +424,13 @@ def _report_usage(response) -> None:
 
 
 def _local_result_to_content(local):
-    """Local tool executors normally return a plain string. They can also return
-    the image marker built by core.output.image_result ({"__kind__": "image",
-    ...}) — the file editor's and memory's `view` on an image file, and every
-    computer-use screenshot — which we translate into a real tool_result content
-    list carrying an `image` block, so the model actually receives pixels
-    instead of a UTF-8 decode error.
+    """Local tool executors return a string, or the image marker from
+    core.output.image_result (file `view` on an image, every computer
+    screenshot), which becomes a tool_result content list with an `image`
+    block.
 
-    The worker side of this lives in core/tools.py `_call_one`, which builds the
-    same shape out of MCP `ImageContent`."""
+    Worker results are built the same way in core/tools.py `_call_one`.
+    """
     if isinstance(local, dict) and local.get("__kind__") == "image":
         return [
             {
@@ -581,31 +468,21 @@ class Chat:
         self._announced = False
 
     async def _run_tool_uses(self, message, index: ToolIndex) -> list:
-        """Route each tool_use block: local executor, or the MCP ToolManager.
+        """Route each tool_use block to a local executor or the MCP
+        ToolManager.
 
-        Every tool_use block owes the API a matching tool_result in the very
-        next message, no exceptions. `execute_blocks` guarantees that for the
-        worker side; the local branch below has to guarantee it for itself,
-        which is why the `except` is blanket and per-block rather than around
-        the loop. A local executor that raised and aborted the batch would
-        orphan its own block *and* every block after it.
-
-        Results are reassembled in the original block order. The API does not
-        require it, but `execute_blocks` promises it for worker blocks and a
-        transcript where the results track the calls is worth keeping — routing
-        locals out of the list and appending them back would otherwise reorder
-        every mixed turn.
+        Every block must get a tool_result in the next message, so the local
+        branch catches exceptions per block. Results keep the original block
+        order.
         """
         blocks = [b for b in message.content if b.type == "tool_use"]
         by_id: dict[str, ToolResultBlockParam] = {}
         worker_blocks: list = []
 
         for block in blocks:
-            # For a computer-toolset member call, `block.toolset_name` is
-            # "computer" (None for every ordinary, non-toolset tool_use). The
-            # paired tool_result must echo the exact same value back or the
-            # API rejects the whole batch — computed once per block so both
-            # the success and error paths below stay in sync automatically.
+            # For a computer-toolset member, `block.toolset_name` is "computer"
+            # (None otherwise); the tool_result must echo it or the API rejects
+            # the batch.
             toolset_name = getattr(block, "toolset_name", None)
 
             try:
@@ -651,25 +528,12 @@ class Chat:
         return [by_id[block.id] for block in blocks]
 
     def _finalize_turn(self, reason: str) -> str:
-        """Close out a turn that's ending abnormally. Always re-scans the
-        live `self.messages` for what's actually still dangling — never
-        trusts a cached `response` object (that was the source of a real
-        duplicate-tool_result bug on ResearchMesh, this router's sibling
-        client — same core/chat.py lineage before this port; see that
-        repo's dev log for the full production-error history).
+        """Close out a turn that ends abnormally.
 
-        Never deletes a turn, a message, or the conversation — only the
-        specific dangling block(s), each in the minimal way its flavor
-        allows: client `tool_use` gets a synthetic error `tool_result`;
-        server-flavored (`server_tool_use`/`mcp_tool_use`) has no valid
-        synthetic result, so the block itself is excised in place.
-
-        Replaces the old `_resolve_pending_tool_uses` (only ever handled
-        the client-tool_use case, and only when `stop_reason == "tool_use"`
-        — a dangling server_tool_use at the iteration cutoff during an
-        open pause_turn was never resolved at all).
-
-        Returns the text to show the user.
+        Re-scans `self.messages` for what is still dangling. Never deletes a
+        turn or message: a client `tool_use` gets a synthetic error
+        `tool_result`, a server-flavored block is removed. Returns the text to
+        show the user.
         """
         client_ids, server_ids = _classify_orphans(self.messages)
         if client_ids:
@@ -688,18 +552,11 @@ class Chat:
         return base
 
     def clear(self) -> str:
-        """`/clear` — drop the conversation, keep the process and the fleet.
+        """`/clear`: drop the conversation, keep the process and the fleet.
 
-        The only recovery path from a poisoned history. `self.messages` lives
-        for the life of the process, so both of the failures that persist —
-        an unanswered tool_use block, and a conversation that has outgrown the
-        context window — leave every subsequent turn failing identically. Before
-        this existed the only way out was killing the router, which also drops
-        every worker connection and every worker's session id with it.
-
-        Deliberately does not touch `self.clients`: the fleet is unrelated to
-        the conversation, and reconnecting three machines to recover from a bad
-        turn would be the expensive half of a restart for none of the benefit.
+        `self.messages` lives for the whole process, so a poisoned or oversized
+        history fails every later turn; this is the way out. `self.clients` is
+        untouched.
         """
         count, chars = _approx_size(self.messages)
         orphans = _orphaned_tool_uses(self.messages)
@@ -716,23 +573,12 @@ class Chat:
     def _report_api_failure(
         self, error: Exception, repair_attempted: str | None = None
     ) -> None:
-        """Say which failure this is, rather than leaving it to guesswork.
+        """Say which failure this is.
 
-        By the time this runs, `_call_chat_with_auto_repair` has already
-        tried the one fully-mechanical repair this app knows how to do
-        (dedupe/answer/excise dangling tool blocks — see
-        `_auto_repair_poisoned_history`) and retried once.
-        `repair_attempted` carries what it found and fixed, if anything.
-
-        This never recommends `/clear`, or any other action that discards
-        conversation content, anywhere — deliberately (ported from
-        ResearchMesh core/chat.py commit 672aae1, whose whole point was
-        removing exactly that from every automated path — `/clear` still
-        exists as the manual command above, untouched). If nothing here
-        could be mechanically repaired, the honest thing to do is report the
-        facts (the error, the size, any orphans still present after the
-        repair attempt) and leave the decision to the user, not prescribe a
-        destructive default.
+        `_call_chat_with_auto_repair` has already tried the mechanical repair
+        and retried once; `repair_attempted` is what it found. This reports
+        facts (error, size, remaining orphans) and never recommends `/clear` or
+        any step that discards conversation.
         """
         text = str(error)
         count, chars = _approx_size(self.messages)
@@ -761,17 +607,12 @@ class Chat:
             )
 
     def _auto_repair_poisoned_history(self) -> str | None:
-        """Mechanical, unconditionally-safe repair of `self.messages`,
-        tried whenever a real `chat()` call raises: dedupe any duplicate
-        tool_result, answer any orphaned client tool_use, excise any
-        orphaned server-flavored block. Touches only the offending blocks,
-        never a whole message or the conversation.
+        """Repair `self.messages` after a failed `chat()`: dedupe tool_results,
+        answer orphaned client tool_uses, remove orphaned server-flavored
+        blocks.
 
-        Ported from ResearchMesh core/chat.py (commit 672aae1).
-
-        Returns a short description of what was repaired, or None if there
-        was nothing here to fix (a real network/auth error, a genuine
-        context-window overflow, or some other cause).
+        Touches only the offending blocks. Returns a short description, or None
+        if there was nothing to fix.
         """
         repairs: list[str] = []
 
@@ -804,15 +645,13 @@ class Chat:
         return "; ".join(repairs) if repairs else None
 
     def _call_chat_with_auto_repair(self, system, tool_defs, thinking):
-        """The one real `chat()` call site: on failure, try
-        `_auto_repair_poisoned_history` and retry once. Returns the
-        response on success (either attempt), or None if both raised
-        (`_report_api_failure` already called in that case).
+        """The one `chat()` call site: on failure, try
+        `_auto_repair_poisoned_history` and retry once.
 
-        Ported from ResearchMesh core/chat.py (commit 672aae1). `system` is
-        an explicit parameter here (unlike ResearchMesh's hardcoded
-        SYSTEM_PROMPT) because this router's system prompt varies per turn
-        (the `/dagent` remote_only branch appends _DELEGATE_ONLY_SUFFIX).
+        Returns the response, or None if both attempts raised
+        (`_report_api_failure` has already run). `system` is a parameter
+        because the prompt varies per turn (`/dagent` appends
+        _DELEGATE_ONLY_SUFFIX).
         """
         try:
             return self.claude_service.chat(
@@ -841,14 +680,10 @@ class Chat:
                 return None
 
     async def workers_listing(self) -> str:
-        """`/workers` — the fleet that is up, and the names `/dagent` takes.
+        """`/workers`: the connected workers, and the names `/dagent` takes.
 
-        Deliberately only what is reachable. A worker that failed to connect or
-        has died since is simply absent, which is the same answer the model gets
-        when it tries to call one: that machine is not available this turn.
-
-        Costs one `list_tools` round trip per worker, which is the point — a
-        cached listing could report a machine that went down ten minutes ago.
+        Costs one `list_tools` round trip per worker so it never lists a
+        machine that has gone down.
         """
         index = await ToolManager.build(
             self.clients,
@@ -871,12 +706,11 @@ class Chat:
         return f"{index.summary()} up\n" + "\n".join(lines)
 
     def split_worker(self, query: str) -> tuple[str | None, str]:
-        """Peel a leading worker name off a `/dagent` request.
+        """Split a leading worker name off a `/dagent` request.
 
-        `gpu-box render the scene` -> ("gpu-box", "render the scene"), but only
-        when that first word is actually a configured worker. Otherwise the
-        whole string is the request — a task legitimately starting with a word
-        that happens to look like a name must not be silently truncated.
+        `gpu-box render the scene` -> ("gpu-box", "render the scene") only when
+        the first word is a configured worker; otherwise the whole string is
+        the request.
         """
         head, _, rest = query.strip().partition(" ")
         if head in self.clients and rest.strip():
@@ -886,34 +720,15 @@ class Chat:
     def resolve_worker_model_request(
         self, sub: str, arg: str
     ) -> tuple[str, dict[str, str] | None, str | None] | None:
-        """Parse `/model <sub> <arg>` to decide whether `sub` names a
-        CONNECTED worker and, if so, what request that implies for its
-        `model` MCP tool.
+        """Decide whether `/model <sub> <arg>` targets a connected worker, and
+        what request that implies for its `model` tool.
 
-        This is the precedence-critical half of `/model`'s worker-reach-in
-        branch: `sub in self.clients` is what makes worker-name-wins the rule
-        over subcommand-name-wins — e.g. a worker literally named "swap" is
-        still treated as a worker target, never confused with the router's
-        own `/model swap <name/index>` subcommand. Extracted as its own
-        method (mirroring `split_worker()` above) specifically so this
-        precedence decision is unit-testable without a live REPL or a real
-        MCP round trip — see smoke_test.py's
-        check_model_worker_dispatch().
-
-        Returns:
-          None
-            `sub` is not a connected worker id. The caller should ignore
-            `arg` entirely and fall through to the router's OWN bare
-            `/model` handling instead.
-          (worker_id, None, error_text)
-            `sub` IS a worker, but `arg` didn't parse into a valid request
-            (a missing swap target, or an unrecognized subcommand).
-            `error_text` is the exact, ready-to-print rejection message.
-            The caller should print it and make NO MCP call.
-          (worker_id, arguments, None)
-            `sub` IS a worker with a fully valid request. `arguments` is
-            exactly the dict to pass to `client.call_tool("model", ...)` —
-            the caller performs that (fallible) call next.
+        A worker name wins over a router subcommand of the same name. Returns
+        None if `sub` is not a connected worker (the caller falls through to
+        the router's own `/model`), (worker_id, None, error_text) for a worker
+        with an invalid request (print the text, make no call), or (worker_id,
+        arguments, None) with the dict to pass to `client.call_tool("model",
+        ...)`.
         """
         if sub not in self.clients:
             return None
@@ -945,16 +760,9 @@ class Chat:
     async def call_worker_model(
         self, worker_id: str, arguments: dict[str, str]
     ) -> str:
-        """Actually invoke a connected worker's `model` MCP tool and format
-        the result — the other half of `/model`'s worker-reach-in branch,
-        paired with `resolve_worker_model_request()` above.
+        """Call a connected worker's `model` tool and format the result.
 
-        Any transport/protocol error from the call is caught and reported,
-        never raised — same reject-don't-crash posture as every other
-        worker-facing path in this file. Extracted as its own method for the
-        same testability reason as `resolve_worker_model_request()`: a
-        FakeWorker can script a response OR an exception here without any
-        real MCP process or live REPL involved.
+        Transport and protocol errors are caught and reported, never raised.
         """
         client = self.clients[worker_id]
         try:
@@ -983,27 +791,18 @@ class Chat:
     ) -> str:
         """One user turn.
 
-        `remote_only` drops the local tools from the request entirely, and
-        `worker` narrows it further to one machine's tools. Both are enforced by
-        *withholding the schemas*, not by instructing the model — the whole
-        difficulty this addresses is that a local `bash` is faster and more
-        directly matched to any concrete command than a `delegate` that takes
-        minutes, so an instruction is a preference and an absent tool is a fact.
-
-        The cost is a cache miss in each direction: tools render ahead of
-        `system` in the cached prefix, so changing the list invalidates
-        everything after it on the `/dagent` turn and again on the next ordinary
-        one. That is worth it against a delegation silently executed on the
-        wrong machine.
+        `remote_only` drops the local tools from the request and `worker`
+        narrows it to one machine's tools. Both withhold the schemas instead of
+        instructing the model, because an absent tool is a fact and an
+        instruction is a preference. Changing the tool list invalidates the
+        cached prefix on this turn and on the next ordinary one.
         """
         final_text_response = ""
         processes.note_user_message(query)
         self.claude_service.add_user_message(self.messages, query)
 
-        # Built once per user turn, not once per tool-use iteration. The fleet
-        # can't change mid-turn, and re-deriving it was a `list_tools` round
-        # trip per worker per loop pass — over the network, up to
-        # MAX_TOOL_ITERATIONS times for a single question.
+        # Built once per user turn: the fleet cannot change mid-turn, and
+        # rebuilding costs a `list_tools` round trip per worker per loop pass.
         index = await ToolManager.build(
             self.clients,
             self.descriptions,
@@ -1018,11 +817,9 @@ class Chat:
             )
             system = SYSTEM_PROMPT + _DELEGATE_ONLY_SUFFIX
 
-            # Nothing to delegate to. Withholding the local tools *and* having
-            # no worker tools would send a turn with no tools at all, which the
-            # model answers from thin air — the one outcome /dagent exists to
-            # rule out. Bail before spending the request, and unwind the user
-            # message so the aborted turn leaves no trace in self.messages.
+            # No worker tools and the local tools withheld would leave a turn
+            # with no tools. Bail out and unwind the user message so the
+            # aborted turn leaves no trace in self.messages.
             if not tool_defs:
                 self.messages.pop()
                 target = f"worker '{worker}'" if worker else "no worker"
@@ -1033,11 +830,8 @@ class Chat:
                     else "[no workers up — /workers lists the fleet]"
                 )
         else:
-            # Local tools first, deliberately. Tools render ahead of `system` in
-            # the cached prefix, and this half is static while `index.tool_defs`
-            # is rebuilt from whichever workers answered — so putting the fixed
-            # list first keeps the front of the prefix identical when a worker
-            # drops out mid-session, instead of shifting everything after it.
+            # Local tools first: they are static, so the front of the cached
+            # prefix stays identical when a worker drops out.
             tool_defs = local_tools.TOOLS + index.tool_defs
             system = SYSTEM_PROMPT
 
@@ -1056,25 +850,18 @@ class Chat:
                 "no fleet"
             )
 
-        # Index of this turn's own assistant message while a pause_turn
-        # continuation is open. Anthropic's own reference implementation
-        # REPLACES this slot on each continuation rather than appending a
-        # sibling message — an unconditional append here (the pre-port
-        # behavior) stacks multiple consecutive assistant-role messages
-        # with zero user messages between them across a multi-continuation
-        # pause_turn sequence, a real contract violation independent of
-        # the duplicate-tool_result bug below. Ported from ResearchMesh
-        # core/chat.py (commit 672aae1) — see that repo's dev log for the
-        # full production-error history this closes out.
+        # Index of this turn's assistant message while a pause_turn
+        # continuation is open. Each continuation replaces that slot instead of
+        # appending, so assistant messages never stack without a user message
+        # between them.
         pending_pause_turn_idx: int | None = None
 
         iterations = 0
         extra_continuations = 0
-        # Set only for the two cases where the next chat() call is
-        # unconditionally required by the API: an open pause_turn, or a
-        # server_tool_use left dangling by a mixed tool_use response.
-        # Reset every pass so the grace budget below is never spent on an
-        # ordinary continuation once the main budget runs out.
+        # Set only when the next chat() call is required by the API: an open
+        # pause_turn, or a server_tool_use left dangling by a mixed tool_use
+        # response. Reset every pass, so the grace budget is not spent on
+        # ordinary continuations.
         mandatory_continuation = False
         while True:
             if iterations >= MAX_TOOL_ITERATIONS:
@@ -1144,19 +931,10 @@ class Chat:
                     break
                 continue
 
-            # Anything else (end_turn, stop_sequence, and critically
-            # max_tokens) falls through here. A max_tokens cutoff that hit
-            # mid-tool_use — e.g. a single large `create` call whose file
-            # content ran past the token budget — still gets its content
-            # appended above like any other assistant turn, tool_use block
-            # included, but stop_reason is "max_tokens", not "tool_use", so
-            # nothing above ever routed/answered it. Left alone, that
-            # tool_use sits unresolved past the end of this run() call and
-            # poisons every later turn (ported from ResearchMesh core/chat.py
-            # — see that repo's dev log for the full incident). Re-check the
-            # live message list rather than trusting stop_reason alone, and
-            # finalize instead of returning as if this were an ordinary
-            # finished turn.
+            # end_turn, stop_sequence and max_tokens fall through to here. A
+            # max_tokens cutoff mid-tool_use is not stop_reason "tool_use", so
+            # nothing above answered that block; re-check the live message list
+            # and finalize instead of returning as if the turn finished.
             if _orphaned_tool_uses(self.messages):
                 final_text_response = self._finalize_turn(
                     f"stopped: response ended early (stop_reason="

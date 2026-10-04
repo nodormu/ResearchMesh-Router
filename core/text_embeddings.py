@@ -1,26 +1,15 @@
 """Vector embeddings from your own private embedding server.
 
-Anthropic has no first-party embeddings endpoint of its own; the documented
-path is Voyage AI, a separate paid API. This module deliberately skips that
-and instead calls whatever HTTP endpoint you already run for embeddings —
-the same private compute an Unreal Engine project's own embedding settings
-might already point at, or any self-hosted server speaking the increasingly
-common OpenAI-compatible `/v1/embeddings` shape (text-embeddings-inference,
-llama.cpp's server, Ollama, vLLM, LM Studio, ...).
+Anthropic has no embeddings endpoint (the documented path is Voyage AI, a
+separate paid API), so this calls any HTTP endpoint you already run that speaks
+the OpenAI-compatible `/v1/embeddings` shape (text-embeddings-inference,
+llama.cpp's server, Ollama, vLLM, LM Studio, ...). It does nothing until `url`
+is set under `[embeddings]` in config.toml, and the tool is declared to Claude
+either way. Settings are re-read on every call, so uncommenting a `url` takes
+effect without a restart.
 
-It does nothing until `url` is set under `[embeddings]` in config.toml — the
-tool is still declared to Claude either way (same pattern as `sql_query` when
-`duckdb` isn't installed), so a fresh clone doesn't need a code change to make
-it disappear, only the config comment left alone. Settings are re-read from
-config.toml on every call rather than cached at import time, so uncommenting
-a `url` (e.g. via the `config_edit` tool) takes effect on the next call
-without restarting the app.
-
-Requires:  pip install httpx2       (already pulled in transitively by both
-                                      `anthropic` and `mcp` -- listed explicitly in
-                                      requirements.txt anyway, since this module
-                                      imports it directly rather than relying on
-                                      that transitive pull-in)
+Requires:  pip install httpx2 (also pulled in by `anthropic` and `mcp`; listed
+in requirements.txt because this module imports it directly)
 """
 
 import asyncio

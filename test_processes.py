@@ -2,21 +2,14 @@
 
     python test_processes.py
 
-Covers `interactive_run`'s `send_env`/`send_secret` step fields — added so a
-password/token prompt can be answered without the real value ever having to
-be written into the tool call itself (see the module's own docstring for the
-full rationale). Spawns real `bash -c 'read -s -p ... ; echo ...'` prompts
-via pexpect (through the real `_run()`, not a re-implementation) to confirm
-the actual value reaches the child process correctly AND never appears in
-the plain, unredacted transcript — not just that the code parses.
+Covers the `send_env` and `send_secret` step fields of `interactive_run`: the
+real value reaches the child (real `bash -c 'read -s ...'` prompts through the
+real `_run()`) and never appears in the unredacted transcript.
 
-`send_secret` shells out to a REAL `pass` binary, but this suite does not
-depend on a real GPG key/password-store being set up — a tiny fake `pass`
-script (plain shell, no gpg at all) is placed on `PATH` ahead of any real
-one for the duration of these specific checks, giving fully deterministic,
-fast, CI-safe coverage of `_resolve_reply`'s own logic (found entry, missing
-entry, `pass` altogether absent, a hung/unanswerable prompt) without ever
-touching real encryption or timing on an actual passphrase cache.
+`send_secret` normally shells out to `pass`; a small fake `pass` script (plain
+shell, no gpg) is put on `PATH` ahead of any real one, so the checks of
+`_resolve_reply` (found entry, missing entry, no `pass`, an unanswerable
+prompt) are deterministic and need no GPG key or password store.
 """
 
 import asyncio
@@ -49,16 +42,13 @@ PROMPT_CMD = 'read -s -p "Enter: " val; echo "GOT:[$val]"'
 
 
 def match_cmd(expected: str) -> str:
-    """A prompt whose own script compares the received value against
-    `expected` INSIDE the shell, printing only MATCH/MISMATCH — never the
-    real value itself. Used for "did the child receive the correct value"
-    checks now that redaction correctly scrubs every occurrence of a secret
-    (see `check_secret_redacted_even_when_echoed_back_later`): a test that
-    verified correctness by echoing the raw value back and inspecting the
-    transcript would be checking for something redaction is now supposed to
-    remove, which is backwards. `PROMPT_CMD`'s echo-back style is kept
-    on purpose for the one test that specifically needs a secret to leak
-    into unrelated output, to prove redaction now catches it anyway.
+    """A prompt whose script compares the received value to `expected` inside
+    the shell and prints only MATCH or MISMATCH, never the value. Used for
+    "did the child receive the right value" checks, since redaction now
+    scrubs every occurrence of a secret and echoing it back would test the
+    wrong thing. `PROMPT_CMD`'s echo-back style stays for the one test that
+    needs a secret to leak into unrelated output, to prove redaction catches
+    it.
     """
     return (
         f'read -s -p "Enter: " val; '
@@ -114,11 +104,10 @@ def check_send_env_missing_var(mod) -> None:
 
 
 class _FakePassOnPath:
-    """Puts a tiny fake `pass` script on `PATH`, ahead of any real one, for
-    the duration of a `with` block. Plain shell, zero gpg/pass dependency —
-    `show existing-entry` prints a known value, `show sleeps-forever` blocks
-    forever (simulating an unanswerable pinentry prompt), anything else
-    fails with the same shape of stderr message a real `pass` would give.
+    """Put a small fake `pass` on `PATH`, ahead of any real one, for the
+    duration of a `with` block. Plain shell, no gpg: `show existing-entry`
+    prints a known value, `show sleeps-forever` blocks (an unanswerable
+    pinentry), anything else fails with a real `pass`-style stderr message.
     """
 
     SCRIPT = """#!/bin/sh
@@ -153,13 +142,9 @@ exit 1
 
 
 def confirm(mod, *names: str) -> None:
-    """Mark entry name(s) as already-confirmed, bypassing the real two-call
-    present-then-use flow for tests that are checking something OTHER than
-    that flow itself (exit-code fidelity, error surfacing, etc.) — see
-    `check_first_reference_always_forces_selection` for the dedicated test
-    of the confirmation gate itself. Without this, every other send_secret
-    test would need two throwaway calls just to get past a gate unrelated
-    to what it's actually testing.
+    """Mark entry names as typed by the user, so tests of other behaviour get
+    past the name gate. `check_first_reference_always_forces_selection`
+    tests the gate itself.
     """
     mod._confirmed_secret_entries.update(names)
 

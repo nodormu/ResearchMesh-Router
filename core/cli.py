@@ -14,15 +14,11 @@ class CliApp:
     def __init__(self, agent: Chat):
         self.agent = agent
 
-        # Ported from ResearchMesh (see speak_listen_tool_integration_plan.md
-        # in ResearchMesh's own /memories for the full design history) —
-        # /voice and /listen below are otherwise identical to that repo's;
-        # /workers and /dagent are the only genuinely router-specific
-        # commands in this file. Off by default: this only controls whether
-        # MY reply also gets spoken via the `speak` tool's own local `_run`
-        # helper; it has no bearing on whether `speak`/`listen` are
-        # reachable as Claude-invoked tools at all (that's config.toml's
-        # own `[speak].enabled`).
+        # /voice and /listen are shared with ResearchMesh; /workers and /dagent
+        # are router-specific. Off by default: it only controls whether replies
+        # are also spoken through the `speak` tool's `_run`, not whether
+        # `speak` and `listen` are reachable as tools (that is
+        # `[speak].enabled`).
         self.auto_speak = False
 
         self.history = InMemoryHistory()
@@ -38,17 +34,14 @@ class CliApp:
         remote_only: bool = False,
         worker: str | None = None,
     ):
-        """Send `text` to the agent as one turn, print the reply, and speak
-        it if `/voice` (auto_speak) is on. Shared by both a normal typed
-        Enter-submit and a completed `/listen` dictation — this is what
-        makes dictation auto-submit independent of the auto_speak flag:
-        auto_speak only ever gates whether MY reply gets spoken, never
-        whether YOUR input gets sent, regardless of which path (typed or
-        dictated) produced that input. `thinking`/`remote_only`/`worker` are
-        parsed by the caller from `/think`/`/dagent` before this is called —
-        a dictated turn never carries either, since you can't speak a
-        command prefix and dictation in the same breath, so it always goes
-        through as a plain turn."""
+        """Send `text` to the agent as one turn, print the reply, and speak it
+        if `/voice` (auto_speak) is on.
+
+        Shared by typed input and a finished `/listen` dictation, so auto_speak
+        only gates speaking the reply, never sending the input. `thinking`,
+        `remote_only` and `worker` come from `/think` and `/dagent` in the
+        caller; a dictated turn never carries them.
+        """
         response = await self.agent.run(
             text, thinking=thinking, remote_only=remote_only, worker=worker
         )
@@ -83,11 +76,11 @@ class CliApp:
                     print(await self.agent.workers_listing())
                     continue
 
-                # `/clear` is the recovery path from a history the API will no
-                # longer accept — an unanswered tool_use block, or a
-                # conversation past the context window. Both persist for the
-                # life of the process, so without this the only way out is
-                # killing the router and every worker connection with it.
+                # `/clear` is the way out of a history the API no longer
+                # accepts: an unanswered tool_use block or a conversation past
+                # the context window. Both persist for the life of the process;
+                # the alternative is killing the router and every worker
+                # connection.
                 if text in ("/clear", "/reset"):
                     print(self.agent.clear())
                     continue
@@ -108,14 +101,10 @@ class CliApp:
                     print(f"[voice: {'on' if self.auto_speak else 'off'}]")
                     continue
 
-                # Dictation: record+transcribe via listen.py's own `_run`,
-                # then AUTO-SUBMIT the transcript as a turn the instant STT
-                # completes — via the same `_submit` path a normal typed
-                # Enter uses, so this happens regardless of whether `/voice`
-                # (auto_speak) is on or off; that flag only affects whether
-                # the REPLY gets spoken, never whether dictated input gets
-                # sent. `/listen <N>`, if `<N>` is given, overrides
-                # [listen]'s configured duration for just this one call.
+                # Dictation: record and transcribe via listen.py's `_run`, then
+                # auto-submit the transcript through the same `_submit` path as
+                # typed input, whatever `/voice` is set to. `/listen <N>`
+                # overrides [listen]'s duration for this call.
                 if text.startswith("/listen"):
                     arg = text[len("/listen"):].strip()
                     tool_input = {}
@@ -143,51 +132,36 @@ class CliApp:
                         )
                     continue
 
-                # /model lists config.toml's claude_models (re-read fresh
-                # each call, see core/claude.py's load_claude_models — an
-                # edit to config.toml shows up without a restart). /model
-                # swap <name/index> actually changes it: session-only, it
-                # never writes config.toml, so a new session always starts
-                # back on claude_models[0]. An invalid name/index rejects
-                # with an error and the valid list, same reject-don't-crash
-                # pattern as /voice and /listen above. This (bare /model)
-                # affects only the ROUTER's OWN reasoning model
-                # (self.agent.claude_service) — see the worker-scoped branch
-                # immediately below for changing a CONNECTED worker's model
-                # instead.
+                # `/model` lists config.toml's claude_models, re-read on every
+                # call (core/claude.py `load_claude_models`), so an edit shows
+                # up without a restart. `/model swap <name/index>` changes it
+                # for the session only and never writes config.toml; a new
+                # session starts on claude_models[0]. An invalid name or index
+                # is rejected with the valid list. This bare form affects only
+                # the router's own reasoning model
+                # (`self.agent.claude_service`); the worker branch below
+                # changes a connected worker's model.
                 if text == "/model" or text.startswith("/model "):
                     rest = text[len("/model"):].strip()
                     parts = rest.split(None, 1)
                     sub = parts[0] if parts else ""
                     arg = parts[1].strip() if len(parts) > 1 else ""
 
-                    # `/model <worker>` (list) or `/model <worker> swap
-                    # <name/index>` — reaches into a CONNECTED worker's own
-                    # `model` MCP tool directly (self.agent.clients), the
-                    # same free/local/no-API-call pattern `/workers` already
-                    # uses. Deliberately NOT reused via Chat.split_worker():
-                    # that helper requires a non-empty remainder (built for
-                    # /dagent, which always needs a task), but a bare
-                    # `/model <worker>` legitimately has nothing after the
-                    # worker name — this is its own worker-name check for
-                    # exactly that reason. Every response line is prefixed
-                    # `[worker: <name>] ` (the same tag format
-                    # core/tools.py already uses for a worker's tool
-                    # descriptions), so a remote result can never be mistaken
-                    # for the router's own bare /model output above — never
-                    # print an un-prefixed "[model: ...]" line for a worker
-                    # result.
-                    #
+                    # `/model <worker>` (list) and `/model <worker> swap
+                    # <name/index>` call a connected worker's own `model` MCP
+                    # tool directly (`self.agent.clients`), like `/workers`: no
+                    # API call. Not built on Chat.split_worker(), which
+                    # requires a non-empty remainder (for /dagent); a bare
+                    # `/model <worker>` has none. Every response line is
+                    # prefixed `[worker: <name>] ` (the tag core/tools.py uses
+                    # in worker tool descriptions), so a worker's result is
+                    # never mistaken for the router's own `/model` output.
                     # The precedence check (`sub in self.agent.clients`) and
-                    # the arg-parsing it implies are pulled into
-                    # Chat.resolve_worker_model_request() (sync, pure — no MCP
-                    # call), and the actual fallible MCP call + response
-                    # formatting into Chat.call_worker_model() (async), so
-                    # both are unit-testable without a live REPL or a real
-                    # worker process — see smoke_test.py's
-                    # check_model_worker_dispatch(). This branch is now just
-                    # the same thin print/continue wrapper every other
-                    # command here already is.
+                    # argument parsing are in
+                    # Chat.resolve_worker_model_request() (pure), and the MCP
+                    # call and formatting in Chat.call_worker_model() (async),
+                    # so both are testable without a REPL; see
+                    # check_model_worker_dispatch() in smoke_test.py.
                     resolved = self.agent.resolve_worker_model_request(sub, arg)
                     if resolved is not None:
                         worker_id, arguments, error_text = resolved

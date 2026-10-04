@@ -1,39 +1,21 @@
-"""Speak text aloud through your own local text-to-speech engine (Piper) and
-play it through your configured audio output.
+"""Speak text aloud through a local text-to-speech engine (Piper) and play it
+through the configured audio output.
 
-Same motivation and shape as `vision.py`/`text_embeddings.py`: self-hosted,
-config-driven, declared to Claude either way so a fresh clone doesn't need a
-code change to gain the capability once configured. It does nothing until
-`config.toml` has `[speak]` set up — see that block for what's required.
+Self-hosted and config-driven like `vision.py` and `text_embeddings.py`; it
+does nothing until `config.toml` has `[speak]` set up, and the tool is declared
+to Claude either way. It can decline to speak for two reasons, returned as a
+`status` field, not raised:
+  - "disabled": `[speak].enabled` is false. Checked first, so a disabled tool
+never touches the filesystem or spawns a subprocess.
+  - "not_configured": `[speak].voice_model` is unset or the file it points at
+does not exist.
 
-Two independent reasons this can decline to actually speak, both returned as
-a `status` field rather than raised, matching `vision.py`'s pattern:
-  - `"disabled"`   — `[speak].enabled` is explicitly false. Checked BEFORE
-                      anything else, so a disabled tool never touches the
-                      filesystem or spawns a subprocess. This is a genuinely
-                      different switch from the one below: it can be flipped
-                      even when a voice model is fully configured and
-                      working, e.g. to mute output for a while without
-                      losing/unsetting `voice_model`.
-  - `"not_configured"` — `[speak].voice_model` is unset, or the file it
-                      points at doesn't exist. Same "not wired up yet, here's
-                      what to do about it" shape `vision_query` uses for a
-                      missing server URL.
+Settings are re-read from config.toml on every call.
 
-Settings are re-read from config.toml on every call (not cached at import),
-so editing `enabled`/`voice_model`/`sink`/`timeout` takes effect on the very
-next call, no restart needed — same as every other config-driven tool here.
-
-Requires:  pip install piper-tts   (NOT `sudo apt install piper` — that
-                                     installs an unrelated GTK app for
-                                     configuring gaming mice, same name,
-                                     completely different project. The real
-                                     engine is the piper-tts PyPI package,
-                                     invoked here as `python3 -m piper`.)
-           A Piper voice model (.onnx + matching .onnx.json sidecar) —
-           see camera_mic_hardware_testing_plan.md / speak_listen_tool_
-           integration_plan.md (in /memories) for the download command and
-           the model-version notes; not fetched automatically by this file.
+Requires:  pip install piper-tts (NOT `sudo apt install piper`, an unrelated
+GTK app; the engine is the PyPI package, run as `python3 -m piper`)
+           A Piper voice model (.onnx plus its .onnx.json sidecar), not fetched
+by this file.
 """
 
 import asyncio

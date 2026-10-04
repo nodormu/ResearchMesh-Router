@@ -2,19 +2,11 @@
 
     python test_listen.py
 
-Doesn't touch real microphone hardware — `_run()` is monkeypatched to
-simulate a hang or a quick success, since the actual gap this closes is in
-`execute()`'s own timeout wrapping, not in the capture/transcription logic
-itself (which needs a real configured device to exercise for real).
-
-Found by reading faster-whisper's own source, not assumed: `model.
-transcribe()` returns a LAZY generator for segments (`generate_segments`
-itself contains `yield`) — the real per-segment decoding work happens when
-the caller ITERATES it, not when `transcribe()` is called. The old code had
-no timeout around either the call or the iteration; a genuinely hung
-transcription would block the tool call forever, with no error, no
-recovery — unlike the capture step right before it, which was always
-bounded via `subprocess.run(timeout=...)`.
+No microphone is touched: `_run()` is monkeypatched to simulate a hang or a
+quick success. The behaviour under test is `execute()`'s timeout around
+transcription: `model.transcribe()` returns a lazy generator, so decoding
+happens when the caller iterates it, and a hung transcription would otherwise
+block the tool call forever.
 """
 
 import asyncio
@@ -52,12 +44,9 @@ def check_duration_resolution(listen) -> None:
     )
     check(
         "clamped to at least 1",
-        # NOT duration_seconds=0 -- `0 or default` evaluates falsy in
-        # Python, so an explicit 0 is (pre-existing behavior, confirmed
-        # against git HEAD, not something this fix changed) silently
-        # treated as "not provided" and replaced by the default instead of
-        # ever reaching the floor clamp. A negative value is truthy, so it
-        # actually exercises max(1, ...) the way this check means to.
+        # Not duration_seconds=0: `0 or default` is falsy, so an explicit 0 is
+        # treated as not provided and never reaches the floor clamp. A negative
+        # value is truthy, so it exercises max(1, ...).
         listen._resolve_duration({"duration_seconds": -5}, {}) == 1,
     )
 

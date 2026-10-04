@@ -2,18 +2,12 @@
 
     python test_bash_session.py
 
-Unlike smoke_test.py (wiring only — imports, tool registry, doc/code drift),
-this spawns the real persistent shell and exercises it: exit-code fidelity,
-the PS1/PROMPT_COMMAND leak fix (closed via the brace-group wrap in
-`_run()` — verified for plain venv activation AND for commands that
-reassign PROMPT_COMMAND itself, e.g. conda/direnv-style hooks),
-cd/export/background-job persistence, heredoc/multi-line safety,
-timeout/Ctrl-C recovery, and restart. Run after any change to
-bash_session.py's sentinel-construction logic.
-
-Spawns a real bash subprocess (via the module's own persistent shell) and
-calls `bash_session.shutdown()` at the end — no real dependency beyond
-`pexpect`, already required by the tool itself.
+Unlike smoke_test.py (wiring only), this spawns the real persistent shell and
+exercises it: exit-code fidelity, the PS1/PROMPT_COMMAND leak fix (for venv
+activation and for commands that reassign PROMPT_COMMAND, e.g. conda/direnv
+hooks), cd/export/background-job persistence, heredoc and multi-line safety,
+timeout and Ctrl-C recovery, and restart. Run after any change to the sentinel
+construction in bash_session.py. Needs only `pexpect`.
 """
 
 import asyncio
@@ -146,12 +140,10 @@ async def check_ps1_leak_contained(bs) -> None:
 
 async def check_ps1_leak_prompt_command_stomp(bs) -> None:
     print("PS1 leak: closed even for a command that reassigns PROMPT_COMMAND itself")
-    # Previously a documented residual gap: a command that reassigns
-    # PROMPT_COMMAND itself (conda/direnv-style activation hooks, unlike
-    # plain venv which only touches PS1) still leaked on its own
-    # activating call. The brace-group wrap in `_run()` closes this too —
-    # bash never touches PROMPT_COMMAND while the group is still open, so
-    # our own reset (inside the same group) always wins now.
+    # A command that reassigns PROMPT_COMMAND (conda/direnv hooks; plain venv
+    # only touches PS1) must not leak on its activating call: bash never runs
+    # PROMPT_COMMAND while the brace group is open, so the reset inside the
+    # group wins.
     r = await run(bs, "PS1='(bs_stomp_test) '; PROMPT_COMMAND='echo BS_STOMP_MARKER'")
     check(
         "activating call has no leak, even for a PROMPT_COMMAND stomp",
@@ -241,11 +233,9 @@ async def check_raw_mode_program_recovery(bs) -> None:
     check("reports force_killed", r.get("force_killed") is True, str(r))
     check("reports state_reset", r.get("state_reset") is True, str(r))
 
-    # The actual proof, not just the self-reported flags: a plain command
-    # right after must be genuinely healthy -- correct exit code, and NOT
-    # itself killed by a stray leftover signal (confirmed live this was a
-    # real risk with an earlier, rejected "kill + retry same buffer"
-    # design, hence the full respawn instead).
+    # Proof beyond the self-reported flags: a plain command right after must be
+    # healthy, with the right exit code and no stray signal (a retry on the
+    # same buffer was rejected for that reason; recovery respawns).
     r2 = await run(bs, "echo RAWMODE_RECOVERY_OK; false; echo rc=$?")
     check(
         "shell genuinely responsive, not just self-reported as such",
@@ -287,35 +277,17 @@ async def check_restart(bs) -> None:
 
 
 async def check_zsh_support(bs) -> None:
-    """`[bash].shell` can be pointed at zsh, and bash_session already
-    imports SHELL_EXECUTABLE/apply_shell_prelude from the same place the
-    stateless `bash` tool does -- so zsh reaches this module today, not
-    hypothetically. It used to be badly broken there: two real,
-    independent bugs, both found live against a real zsh 5.9, neither
-    exercised by the bash-only checks above since bash's pty session
-    (echo=False) never echoes input at all, which is what let both bugs
-    hide.
+    """zsh through `[bash].shell`: the cases bash's pty (echo=False) cannot
+    show.
 
-    Bug 1 (spawn hang): zsh's line editor (ZLE) redraws every line with
-    backspace sequences this module's ANSI stripping doesn't handle --
-    fixed via `unsetopt zle`. But ZLE is still the active reader for
-    whatever line turns it off, so folding that into the SAME multi-line
-    sendline() as the rest of _spawn()'s priming left the remainder
-    unread in the pty buffer, genuinely hanging forever (reproduced
-    directly). Fixed by sending it as its own round-trip first.
+    1. Spawn must not hang: `unsetopt zle` is sent as its own round trip,
+    because ZLE is still reading the line that turns it off and would leave the
+    rest of a multi-line sendline() unread.
+    2. Recovery must not corrupt: zsh's plain reader still echoes input, so
+    `_handle_timeout()`'s command uses a `%d` placeholder instead of the
+    literal `:130`, which expect() would otherwise match in the echo.
 
-    Bug 2 (recovery-path corruption): zsh's non-ZLE fallback reader still
-    echoes input back, even with ZLE off. _handle_timeout()'s recovery
-    command used to hardcode the literal digits ":130" in its own printf
-    SOURCE rather than a %d placeholder + variable -- so that fully-formed
-    sentinel pattern showed up in the ECHO of the command, and expect()
-    matched it there, before the command even ran. The real completion
-    then bled into the NEXT call's capture (wrong return_code, garbage
-    output). Fixed by using the same %d-not-literal-digits shape the main
-    per-call path already used.
-
-    Skips cleanly (not a failure) if zsh isn't installed -- this is
-    coverage for an opt-in shell choice, not a hard dependency.
+    Skips if zsh is not installed.
     """
     print("zsh support ([bash].shell = zsh) -- both bugs above, fixed")
 
@@ -326,10 +298,9 @@ async def check_zsh_support(bs) -> None:
         print("  skip  zsh not installed on this machine -- nothing to test")
         return
 
-    # Simulate what a fresh import would compute with [bash].shell=zsh --
-    # _IS_ZSH/_PS1_RESET/_ZSH_SESSION_PRELUDE are derived once at import
-    # time in the real module, so a live monkeypatch has to override all
-    # three together, not just SHELL_EXECUTABLE itself.
+    # Simulate a fresh import with [bash].shell=zsh: _IS_ZSH, _PS1_RESET and
+    # _ZSH_SESSION_PRELUDE are derived at import time, so a monkeypatch must
+    # override all three.
     orig = (bs.SHELL_EXECUTABLE, bs._IS_ZSH, bs._PS1_RESET, bs._ZSH_SESSION_PRELUDE)
     await bs.shutdown()  # drop the existing bash-backed shell first
     bs.SHELL_EXECUTABLE = zsh_path
@@ -363,8 +334,8 @@ async def check_zsh_support(bs) -> None:
             str(r),
         )
 
-        # Plain Ctrl-C recovery -- this exact scenario is what exposed
-        # Bug 2 above (a stale ":130" bleeding into this exact follow-up).
+        # Plain Ctrl-C recovery. The follow-up command would be corrupted by a
+        # stale ":130" echo, so it is checked here.
         r = await run(bs, "sleep 30", timeout=2)
         check("zsh: reports timed_out", r.get("timed_out") is True, str(r))
         check(
@@ -411,23 +382,12 @@ async def check_zsh_support(bs) -> None:
 
 
 async def check_dash_support(bs) -> None:
-    """`[bash].shell` can be pointed at dash too -- Ubuntu/Debian's real
-    `/bin/sh`, so it matters even though bash is the default interactive
-    shell. It used to leak a garbled PS1 into every single command's
-    output: dash has NO `PROMPT_COMMAND`, no `precmd`-equivalent, no
-    dynamic prompt-hook mechanism at all, so the bash-shaped reset was
-    silently inert there (same underlying gap zsh had, different shell).
+    """dash through `[bash].shell`: it has no `PROMPT_COMMAND` or `precmd`, so
+    the bash-shaped reset is inert there. A plain `PS1=''` as the last
+    statement in the brace group is enough, since dash reads $PS1 fresh when
+    it prints a prompt.
 
-    Fix is simpler than zsh's needed to be: dash's prompt-printing just
-    reads $PS1's CURRENT value fresh, with nothing invoked in between --
-    no hook a user command could re-arm to fire again later, after our
-    own reset already ran. So a plain, unconditional `PS1=''` as the
-    final statement inside the same brace group is fully sufficient;
-    nothing can run after it but before dash prints its next prompt.
-
-    Skips cleanly (not a failure) if dash isn't installed -- this is
-    coverage for an opt-in shell choice, not a hard dependency
-    (even though dash ships by default on Ubuntu/Debian).
+    Skips if dash is not installed.
     """
     print("dash support ([bash].shell = dash) -- PS1-leak fix")
 
@@ -438,11 +398,9 @@ async def check_dash_support(bs) -> None:
         print("  skip  dash not installed on this machine -- nothing to test")
         return
 
-    # Simulate what a fresh import would compute with [bash].shell=dash --
-    # _IS_DASH/_PS1_RESET are derived once at import time in the real
-    # module, so a live monkeypatch has to override both together, not
-    # just SHELL_EXECUTABLE itself. _ZSH_SESSION_PRELUDE stays "" (dash
-    # has no ZLE-style redraw problem, confirmed live separately).
+    # Simulate a fresh import with [bash].shell=dash: _IS_DASH and _PS1_RESET
+    # are derived at import time, so a monkeypatch must override both.
+    # _ZSH_SESSION_PRELUDE stays "".
     orig = (bs.SHELL_EXECUTABLE, bs._IS_ZSH, bs._IS_DASH, bs._PS1_RESET)
     await bs.shutdown()  # drop the existing bash-backed shell first
     bs.SHELL_EXECUTABLE = dash_path

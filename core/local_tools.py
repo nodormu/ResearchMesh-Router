@@ -54,12 +54,10 @@ MODULES = [
 
 TOOLS = [tool for module in MODULES for tool in module.TOOLS]
 
-# A client TOOLSET entry (e.g. computer.COMPUTER_TOOL) carries no "name" at
-# all — the dated `type` fixes its member set instead — so duplicate-checking
-# has to skip those rather than assume every TOOLS entry has one. This can
-# never silently hide a real collision: a toolset's own members are declared
-# by Anthropic server-side, never spelled out here, so there is nothing of
-# this module's own to compare them against anyway.
+# A toolset entry (e.g. computer.COMPUTER_TOOL) has no "name", so
+# duplicate-checking skips it. That cannot hide a collision: a toolset's
+# members are declared by Anthropic server-side, so this module has nothing of
+# its own to compare them against.
 _NAMED = [t["name"] for t in TOOLS if "name" in t]
 _DUPLICATES = {name for name in _NAMED if _NAMED.count(name) > 1}
 if _DUPLICATES:

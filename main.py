@@ -29,15 +29,11 @@ def _load_config() -> dict:
 
 _config = _load_config()
 
-# Claude model: config.toml [claude] claude_models — the first entry is what
-# every new session starts on. refresh_claude_models() is the TTL-gated live
-# scan (see core/claude.py): most process starts just read the cached array
-# below with no network call at all; roughly once a day it re-scans
-# Anthropic's real /v1/models and updates config.toml's cache in place. No
-# env var override — config.toml is the single source of truth (swapping
-# mid-session is /model swap's job, not an env var's; see core/cli.py).
-# This is the ROUTER's OWN reasoning model only — it has no bearing on which
-# model a connected worker uses, that is entirely each worker's own config.
+# Claude model: the first entry of config.toml [claude] claude_models is what
+# every new session starts on. refresh_claude_models() is a TTL-gated live scan
+# (core/claude.py): most starts read the cached array with no network call. No
+# env var override; `/model swap` changes it mid-session. This is the router's
+# own reasoning model only; each worker has its own config.
 _claude_models = refresh_claude_models()
 claude_model = _claude_models[0] if _claude_models else "claude-sonnet-5"
 
@@ -68,12 +64,9 @@ def _expand(value):
     """Expand `~` and `$VAR`/`${VAR}` in a config value, recursing into lists
     and dicts.
 
-    config.toml is plain TOML and `tomllib` does no substitution of its own, so
-    without this a path like `/home/$USER/...` would be handed to the
-    subprocess literally. An undefined variable is left as-is (that is
-    `expandvars`' behaviour, not an accident) so a typo shows up verbatim in
-    the "could not reach/launch" message instead of silently collapsing to a
-    path that starts with `/home//`.
+    TOML does no substitution, so `/home/$USER/...` would reach the subprocess
+    literally. An undefined variable is left as is (`expandvars` behaviour), so
+    a typo shows up in the error instead of collapsing to `/home//`.
     """
     if isinstance(value, str):
         return os.path.expanduser(os.path.expandvars(value))
@@ -85,15 +78,12 @@ def _expand(value):
 
 
 def _expand_paths(server: dict) -> dict:
-    """A copy of a [mcp].servers entry with `~`/`$VAR` expanded in the fields
-    that hold paths or URLs, so config.toml can be checked in without anyone's
-    home directory or mount point baked into it.
+    """A copy of a [mcp].servers entry with `~`/`$VAR` expanded in `command`,
+    `url` and `env` values, so config.toml can be checked in without
+    anyone's home directory baked in.
 
-    Only `command`, `url` and `env` are touched. `env`'s keys are variable
-    *names* and are left alone; only its values are expanded. `token_env` is
-    likewise a name, and the token itself never appears in this file.
-    `description` is prose meant for the model and is deliberately not
-    expanded — a `$` in it is a dollar sign.
+    `env` keys and `token_env` are names and are left alone; `description` is
+    prose for the model and is not expanded.
     """
     expanded = dict(server)
     for key in ("command", "url", "env"):
@@ -105,12 +95,9 @@ def _expand_paths(server: dict) -> dict:
 def worker_descriptions(servers: list[dict]) -> dict[str, str]:
     """worker id -> its `description`, for the routing header on every tool.
 
-    This is the field that makes a fleet navigable. ResearchMesh's `mcp_server.py`
-    hardcodes one `_DELEGATE_DESCRIPTION` constant, so three workers advertise
-    byte-identical text and the model has nothing to choose between them. The
-    description belongs here rather than on the worker because it describes the
-    machine's *role in this fleet* — which the machine itself has no way to
-    know, and which changes without redeploying anything.
+    The description lives here, not on the worker, because it describes the
+    machine's role in this fleet, which the machine cannot know and which
+    changes without a redeploy.
     """
     out: dict[str, str] = {}
     for index, server in enumerate(servers):
@@ -126,29 +113,22 @@ def build_client(
 ) -> MCPClient:
     """One MCPClient from a [mcp].servers entry.
 
-    Two kinds of entry are recognized:
+    Two kinds of entry:
 
     - Streamable HTTP (a worker on another machine):
         { name = "...", url = "http://host:port/mcp/", token_env = "...",
           description = "what this box is for" }
 
-    - stdio (a worker this process launches itself as a subprocess):
+    - stdio (a worker this process launches):
         { name = "...", command = ["python", "/path/to/mcp_server.py"],
           env = { ... }, description = "..." }
-      `command` is the full argv — command[0] is the executable, the rest are
-      its arguments. `env` may be omitted; when given, it's extra environment
-      variables to hand the subprocess (merged with a safe default set — PATH,
-      HOME, etc. — by the MCP SDK itself, so you don't need to repeat those).
+      `command` is the full argv. `env` adds variables to the subprocess; the
+    MCP SDK merges in a safe default set (PATH, HOME, ...).
 
-    `description` is consumed by worker_descriptions(), not here.
-
-    `timeout_seconds` falls back to the entry's own `timeout_seconds`, then to
-    [router] timeout_seconds. It applies to both transports: stdio times out at
-    the MCP session layer just as HTTP does.
-
-    Paths are expected to arrive already expanded (`_connect_mcp_servers` runs
-    `_expand_paths` first); calling this directly with a raw config entry will
-    pass `$USER` through to the subprocess unsubstituted.
+    `description` is read by worker_descriptions(), not here. `timeout_seconds`
+    falls back to the entry's own value, then [router] timeout_seconds, for
+    both transports. Paths must already be expanded (`_connect_mcp_servers`
+    runs `_expand_paths` first).
     """
     timeout = server.get(
         "timeout_seconds",
@@ -243,14 +223,11 @@ async def _connect_mcp_servers(stack: AsyncExitStack, clients: dict) -> None:
 
 
 def _reap_orphans_on_exit() -> None:
-    """Last-line safety net, registered FIRST so AsyncExitStack's LIFO
-    unwind order runs it LAST — after local_tools.shutdown() and every
-    worker's own cleanup have already had their chance. Doesn't replace
-    any of that; checks the one thing none of those can see on their own
-    (see core/process_reaper.py) — the real OS child-process tree, not any
-    tool's own bookkeeping about what it thinks it already closed.
-    Wrapped defensively, same rule as every other exit-path step here:
-    cleanup must not be able to turn an ordinary exit into a traceback.
+    """Last-line safety net, registered first so AsyncExitStack's LIFO unwind
+    runs it last, after local_tools.shutdown() and each worker's cleanup. It
+    checks the real OS child-process tree (core/process_reaper.py), which no
+    tool's own bookkeeping can see. Wrapped defensively: cleanup must not
+    turn an ordinary exit into a traceback.
     """
     try:
         reaped = process_reaper.reap_orphans()
@@ -299,11 +276,10 @@ async def main():
 
             clients[client_id] = client
 
-        # The router now owns local tools, so it has a browser, an IPython
-        # kernel and a DuckDB connection of its own to release — registered on
-        # the same stack as each worker's cleanup. `local_tools.shutdown`
-        # isolates each step internally, so one tool failing to close cannot
-        # skip the others or turn a Ctrl-C into a traceback.
+        # The router owns local tools, so it releases its own browser, IPython
+        # kernel and DuckDB connection on the same stack as each worker's
+        # cleanup. `local_tools.shutdown` isolates each step, so one failing
+        # close cannot skip the others.
         stack.push_async_callback(local_tools.shutdown)
 
         chat = Chat(

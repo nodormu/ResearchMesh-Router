@@ -10,7 +10,7 @@ from core.output import IMAGE_MEDIA_TYPES, clip, image_result
 
 # Anthropic-defined ("learned") tool schemas. Claude already knows how to use
 # these, so they carry no description.
-#   bash + text_editor      -> client-executed (we run them below)
+#   bash + text_editor      -> client-executed (run here, below)
 #   web_search + web_fetch  -> server-executed by Anthropic (no executor here)
 
 BASH_TOOL = {"type": "bash_20250124", "name": "bash"}
@@ -18,24 +18,15 @@ TEXT_EDITOR_TOOL = {
     "type": "text_editor_20250728",
     "name": "str_replace_based_edit_tool",
 }
-# The web tools are versioned by capability, not superseded: each dated variant
-# is a superset of the last, so we track the newest. 20260318 adds
-# `response_inclusion` to both (not required — set it to "excluded" to drop dynamically-filtered
-# result blocks from the response); web_fetch also carries `use_cache` from
-# 20260309. Both are left at their defaults ("full" / true) here.
-#
-# `allowed_callers: ["direct"]` is explicit, not a default restatement: leaving
-# it unset implicitly opts these tools into "programmatic tool calling" (being
-# invokable from inside Anthropic's own `code_execution` tool), which this
-# project doesn't use — `code_execution` appears nowhere in this codebase on
-# purpose (see researchmesh_new_anthropic_tool_stubs_review.md in /memories).
-# The cost of leaving that door open anyway showed up live: Claude Haiku 4.5
-# rejects the whole request with "does not support programmatic tool calling"
-# the moment web_search/web_fetch are declared without this, even though
-# Haiku is otherwise perfectly capable of calling either tool directly. This
-# is a straight correctness fix, not a workaround — it makes the declared
-# schema match how these tools are actually invoked here on every model, not
-# just Haiku.
+# The web tools are versioned by capability: each dated variant is a superset
+# of the last, so the newest is used. 20260318 adds `response_inclusion` to
+# both (set "excluded" to drop dynamically filtered result blocks); web_fetch
+# also has `use_cache` from 20260309. Both are left at their defaults.
+# `allowed_callers: ["direct"]` is explicit on purpose: unset, these tools are
+# implicitly invokable from Anthropic's `code_execution` tool (programmatic
+# tool calling), which this project does not use. Haiku 4.5 rejects the whole
+# request ("does not support programmatic tool calling") when the tools are
+# declared without it.
 WEB_SEARCH_TOOL = {
     "type": "web_search_20260318",
     "name": "web_search",
@@ -49,34 +40,21 @@ WEB_FETCH_TOOL = {
 
 TOOLS = [BASH_TOOL, TEXT_EDITOR_TOOL, WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
 
-# Tool names we execute locally. web_search / web_fetch run on Anthropic's side
-# and never come back to us as tool_use blocks.
+# Tool names executed locally. web_search and web_fetch run on Anthropic's side
+# and never return as tool_use blocks.
 _LOCAL = {"bash", "str_replace_based_edit_tool"}
 
 _MAX_OUTPUT = 12000
 
-# --- bash tool shell selection -------------------------------------------
-# Ubuntu (confirmed live) and Debian (documented policy since Squeeze) point
-# /bin/sh at dash, not bash, so Python's shell=True default would silently
-# run commands under dash's stricter POSIX semantics instead of bash's.
-# Other Debian-derived distros likely inherit this, but that's an inference
-# from packaging lineage, not something verified here -- see SH_TARGET below
-# for how this is actually checked live rather than assumed per distro.
-# [bash].shell in config.toml lets the user pin whatever shell they actually
-# want (defaulting to /bin/bash, which is also a harmless no-op on distros
-# where /bin/sh is already bash, e.g. RHEL/Fedora/AlmaLinux). Resolved once
-# at import time — not per call — so it can never drift from the shell name
-# baked into SYSTEM_PROMPT in core/chat.py, which reads this same constant.
-#
-# Naming note: this is deliberately NOT called BASH_SHELL. Anthropic's
-# bash_20250124 tool schema requires its `name` field to be the literal
-# string "bash" (see BASH_TOOL below) -- that's a fixed, external API
-# contract, unrelated to which local interpreter actually executes the
-# commands it hands us. A constant called BASH_SHELL sitting next to
-# BASH_TOOL could read as if it must also always mean bash, and could
-# genuinely hold a zsh/dash path -- SHELL_EXECUTABLE keeps those two
-# separate concepts from bleeding into each other for whoever (or
-# whatever future coding session) reads this file next.
+# --- bash tool shell selection ---
+# Ubuntu and Debian point /bin/sh at dash, so Python's shell=True would run
+# commands under dash's stricter POSIX semantics. [bash].shell in config.toml
+# pins the shell (default /bin/bash, a harmless no-op where /bin/sh is already
+# bash). Resolved once at import, so it matches the shell name in SYSTEM_PROMPT
+# (core/chat.py), which reads this constant.
+# Named SHELL_EXECUTABLE, not BASH_SHELL: Anthropic's bash_20250124 schema
+# fixes the tool `name` to "bash" (see BASH_TOOL), which says nothing about the
+# interpreter; the constant can hold a zsh or dash path.
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.toml"
 _DEFAULT_SHELL = "/bin/bash"
 
@@ -106,14 +84,10 @@ SHELL_EXECUTABLE = _resolve_shell_executable()
 
 
 def _resolve_sh_target() -> str:
-    """What /bin/sh actually points to on THIS machine, checked live.
+    """What /bin/sh points to on this machine, checked at process start.
 
-    Never hardcode this as a string literal in source/prompt text -- it
-    varies by distro (dash on Debian/Ubuntu, bash on many others) and a
-    literal baked in at write-time would ship a stale, potentially false
-    claim to every future clone of this repo running on a different box.
-    Recomputed fresh every process start so it's always accurate for
-    wherever this code actually happens to be running.
+    Never hardcode it: it is dash on Debian/Ubuntu and bash on many other
+    distros.
     """
     try:
         return os.path.realpath("/bin/sh")
@@ -123,40 +97,24 @@ def _resolve_sh_target() -> str:
 
 SH_TARGET = _resolve_sh_target()
 
-# Neutralizes the two behavioral differences zsh has from bash/sh that would
-# otherwise silently change what a command does: SH_WORD_SPLIT restores
-# bash-style word-splitting of an unquoted "$var" (zsh doesn't split by
-# default), and unsetting NOMATCH restores bash's "pass an unmatched glob
-# through literally" behavior (zsh hard-errors on one by default). Confirmed
-# against zsh's own FAQ/documentation, not assumed: these are exactly the
-# two options zsh's own maintainers document as "the classic differences"
-# from bash (https://zsh.sourceforge.io/FAQ/zshfaq02.html,
-# https://zsh.sourceforge.io/FAQ/zshfaq03.html) -- the same fix
-# core/zsh.py already uses in the macOS fork of this project, ported here
-# after independently verifying it against zsh's own docs rather than
-# trusting that (untested-on-real-hardware) implementation as ground truth.
-#
-# Deliberately NOT also using KSH_ARRAYS to neutralize the one remaining
-# gap (zsh arrays are 1-indexed, bash's are 0-indexed): that option bundles
-# in side effects beyond the index base -- an unsubscripted $array starts
-# meaning only the first element instead of the whole array, and braces
-# become REQUIRED for subscripts/modifiers that don't need them in plain
-# zsh ($path[2] stops working, ${path[2]} is required) -- trading one
-# divergence for a different, more syntactically invasive one. Left as a
-# documented fact in SYSTEM_PROMPT (core/chat.py) instead of patched here.
+# Neutralizes the two zsh/bash differences that silently change a command:
+# SH_WORD_SPLIT restores word-splitting of an unquoted "$var", and unsetting
+# NOMATCH restores passing an unmatched glob through literally (zsh errors).
+# These are the classic differences listed in zsh's own FAQ (zshfaq02,
+# zshfaq03).
+# KSH_ARRAYS is deliberately not used for the remaining gap (zsh arrays are
+# 1-indexed): it also changes unsubscripted `$array` and requires braces for
+# subscripts. The gap is documented in SYSTEM_PROMPT (core/chat.py) instead.
 _ZSH_PRELUDE = "setopt SH_WORD_SPLIT; unsetopt NOMATCH"
 
 
 def apply_shell_prelude(command: str) -> str:
-    """Prepend the zsh prelude above if SHELL_EXECUTABLE resolves to zsh,
-    otherwise return `command` unchanged. Shared with core/processes.py
-    (imported, not duplicated) so `bash` and `interactive_run` can't drift
-    out of sync the way SHELL_EXECUTABLE itself once did before both
-    tools were pointed at the same constant.
+    """Prepend the zsh prelude if SHELL_EXECUTABLE is zsh, otherwise return
+    `command` unchanged. Shared with core/processes.py so `bash` and
+    `interactive_run` cannot drift apart.
 
-    Newline-joined rather than "; "-joined so a command that opens with
-    its own `#` comment or its own statement isn't swallowed by a leading
-    separator -- same reasoning core/zsh.py's prelude already uses.
+    Newline-joined, not "; "-joined, so a command that starts with its own `#`
+    comment is not swallowed by a leading separator.
     """
     if Path(SHELL_EXECUTABLE).name != "zsh":
         return command

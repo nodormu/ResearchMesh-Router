@@ -2,26 +2,15 @@
 
     python test_process_reaper.py
 
-Unlike smoke_test.py (wiring only — import/compile via its dynamic core/*.py
-glob), this spawns real process trees and confirms the reaper actually finds
-and kills them. Two real bugs were caught building this, both regression-
-tested here specifically so neither can silently reappear:
+Unlike smoke_test.py (wiring only), this spawns real process trees and confirms
+the reaper finds and kills them. Two cases are pinned:
 
-1. `/proc/<pid>/task/<TID>/children` is PER-THREAD, not per-process — using
-   only `task/<pid>/` (the main thread) misses anything forked from a worker
-   thread. Every tool that blocks in this app (bash_session, kernel,
-   computer, listen, speak) does exactly that via `asyncio.to_thread()`, so
-   this is the realistic case, not an edge case — `check_multithread_fork`
-   spawns a child from inside `asyncio.to_thread()` specifically, the same
-   way bash_session's own `_spawn()` really does, and would have silently
-   passed with the old single-thread-only implementation despite finding
-   nothing at all.
-2. SIGKILL doesn't transition its target to zombie state instantly — a
-   single WNOHANG attempt right after killing can still report "nothing to
-   reap yet" even though the same child reliably shows up moments later.
-   `check_full_tree` confirms the full multi-level tree (a shell, a
-   foreground job, and a background job) is genuinely gone afterward, not
-   just reported as killed.
+1. `/proc/<pid>/task/<TID>/children` is per thread, so a child forked from a
+worker thread is invisible to a main-thread-only scan. `check_multithread_fork`
+spawns from inside `asyncio.to_thread()`, as bash_session's `_spawn()` does.
+2. SIGKILL does not make the target a zombie instantly, so one WNOHANG right
+after can find nothing to reap. `check_full_tree` confirms a multi-level tree
+(a shell, a foreground job and a background job) is gone afterwards.
 """
 
 import asyncio

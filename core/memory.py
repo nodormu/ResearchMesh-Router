@@ -1,25 +1,24 @@
-"""`memory` — Anthropic's client-executed memory tool (`memory_20250818`).
+"""`memory`: Anthropic's client-executed memory tool (`memory_20250818`).
 
 A learned schema: Claude already knows the six commands (view, create,
-str_replace, insert, delete, rename), so there is no description to write. What
-this module supplies is the storage behind them.
+str_replace, insert, delete, rename), so there is no description. This module
+supplies the storage.
 
-`/memories` is a *virtual* prefix, not a real path. Every command is mapped onto
-one real directory (`CLAUDE_MEMORY_DIR`, default `./memories`) and confined to
-it — that confinement is the one hard requirement Anthropic's docs place on the
-client, because a path like `/memories/../../.ssh/id_rsa` is otherwise a read of
-the user's private key. `_resolve` therefore canonicalises before checking, so
-`..` segments and symlinks that escape the root are both caught.
+`/memories` is a virtual prefix. Every command maps onto one real directory
+(`CLAUDE_MEMORY_DIR`, default `./memories`) and is confined to it, which is the
+one hard requirement Anthropic places on the client:
+`/memories/../../.ssh/id_rsa` would otherwise read a private key. `_resolve`
+canonicalises before checking, so `..` segments and escaping symlinks are
+caught.
 
-This is what makes the tool worth a slot: it is the only state here that
-survives process exit. The `python` kernel, the browser page, and the DuckDB
-connection are all per-session; memory is not. When the tool is in the request,
-the API automatically prepends its own memory protocol to the system prompt, so
-core/chat.py deliberately says nothing about it.
+Memory is the only state that survives process exit; the `python` kernel, the
+browser page and the DuckDB connection are per session. The API prepends its
+own memory protocol to the system prompt when the tool is present, so
+core/chat.py says nothing about it.
 
-The return strings match the reference behaviour in Anthropic's docs. Claude was
-trained against that wording, so they are copy-sensitive: reword them and the
-model starts misreading ordinary outcomes as failures.
+The return strings match Anthropic's reference wording, which Claude was
+trained against; rewording them makes the model misread ordinary outcomes as
+failures.
 """
 
 import asyncio

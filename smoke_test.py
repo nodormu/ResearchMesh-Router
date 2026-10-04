@@ -1,42 +1,26 @@
-"""Fast sanity checks — no API key, no network, no running workers needed.
+"""Fast sanity checks: no API key, no network, no running workers.
 
     python smoke_test.py
 
-This is not a test suite. It checks the wiring that breaks silently, which in
-this repo is a different set of things from ResearchMesh:
+Checks the wiring that breaks silently:
 
-  1. every module imports, and every file byte-compiles
-  2. tool names are namespaced, unique, and legal for the Anthropic API
-  3. the namespacing round-trips — a call on `worker__tool` reaches the right
-     worker as plain `tool`
-  4. a dead worker is skipped rather than taking the fleet down
+  1. every module imports and byte-compiles
+  2. tool names are namespaced, unique and legal for the Anthropic API
+  3. a call on `worker__tool` reaches the right worker as plain `tool`
+  4. a dead worker is skipped, not fatal
   5. execution fans out across workers but stays serial within one
-  6. every tool_use block gets exactly one tool_result, in the original order
-  7. the local half of the tool list is legal, cannot collide with a worker's
-     namespaced name, and a turn mixing local and worker calls still returns one
-     result per block in order
-  8. `/dagent` withholds every local schema, and `/clear` plus the failure
-     report can tell the two *persistent* 400s apart — an unanswered tool_use
-     block and a conversation past the context window both leave every later
-     turn failing identically, and they need different fixes
-  9. the per-model tool-compatibility handler, the computer toolset round trip
-     and `cursor_position`, and the web tools' `allowed_callers`, on a fake API
+  6. every tool_use block gets exactly one tool_result, in order
+  7. local tool names are legal and cannot collide with a worker's
+  8. a mixed local/worker turn returns one result per block, in order
+  9. `/dagent` withholds every local schema
+ 10. `/clear` and diagnostics tell orphaned tool_use from a full context
+ 11. per-model tool handling, the computer toolset and `cursor_position`
+ 12. the web tools' `allowed_callers`, on a fake API
 
-(2) is the whole reason this repo exists. Two ResearchMesh workers both expose a
-tool called `delegate`, and sending both to the API is a hard failure:
-
-    400 invalid_request_error: tools: Tool names must be unique.
-
-That is a real, verified response, not a defensive guess — and nothing else in
-this codebase would catch a regression in it until a second worker was connected
-and a real turn was attempted.
-
-(5) matters because the fan-out is the feature. A refactor that quietly reverts
-`execute_blocks` to a sequential loop would still pass every other check here
-and still return correct answers — just three times slower, invisibly.
-
-Only the four module-level dependencies are required, so this runs on a bare CI
-box with no workers configured and no ANTHROPIC_API_KEY set.
+Unique names (2) are the reason this repo exists: two workers exposing
+`delegate` is a 400 (`Tool names must be unique`). A sequential
+`execute_blocks` (5) would pass every other check, only slower. Needs only the
+four module-level dependencies.
 """
 
 import asyncio
@@ -52,8 +36,7 @@ from mcp.types import CallToolResult, TextContent, Tool
 ROOT = Path(__file__).resolve().parent
 FAILURES: list[str] = []
 
-# The API's own rule for a tool name, which is what check_namespacing enforces
-# locally so you don't need a live request to find out you broke it.
+# The API's rule for a tool name; check_namespacing enforces it locally.
 TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 
 
@@ -99,12 +82,9 @@ class FakeWorker:
             for n in tool_names
         ]
         self._fail_listing = fail_listing
-        # Neither needs to be given, both None by default, so every EXISTING caller
-        # (check_dagent_and_workers, check_fanout_and_results, ...) keeps
-        # getting the original fixed "ran {tool_name}" response, unchanged.
-        # Set one of these to script a specific `model`-tool-style response
-        # (e.g. a numbered list, or is_error=True) or a transport failure,
-        # without needing a real MCP round trip — see
+        # Set one of these to script a reply (e.g. a numbered list or
+        # is_error=True) or a transport failure. Both default to None, which
+        # keeps the fixed "ran {tool_name}" reply. See
         # check_model_worker_dispatch().
         self._call_tool_result = call_tool_result
         self._call_tool_error = call_tool_error
@@ -226,24 +206,15 @@ def check_namespacing() -> None:
 
 
 def check_namespacing_edge_cases() -> None:
-    """The two `_legalise()` responsibilities `check_namespacing` never triggers.
-
-    That check's own two workers happen not to collide after sanitising and
-    stay well under the 128-char API limit — so neither disambiguation nor
-    hash-truncation, both explicitly named in CLAUDE.md as reasons this
-    function exists, is exercised anywhere else. A regression in either would
-    pass every other check in this file.
+    """The two `_legalise()` paths `check_namespacing` does not hit:
+    disambiguating names that collide after sanitising, and truncating past
+    the 128-char limit with a hash.
     """
     print("namespacing edge cases")
     from core.tools import ToolManager
 
-    # "gpu box" and "gpu.box" both sanitise to "gpu_box" — space and period
-    # are both illegal characters substituted with the same "_". (config.toml
-    # once carried a "gpu box and gpu-box would collide" example that does
-    # NOT actually collide — hyphen is already API-legal per _ILLEGAL's own
-    # pattern and is never substituted at all; fixed there to match this
-    # test's own real example. README already had the correct version.)
-    # Without disambiguation, one worker's tool would silently shadow the
+    # "gpu box" and "gpu.box" both sanitise to "gpu_box" (space and period
+    # become "_"). Without disambiguation, one worker's tool would shadow the
     # other's.
     colliding = {
         "gpu box": FakeWorker(["delegate"]),
@@ -377,12 +348,9 @@ def check_fanout_and_results() -> None:
 
 
 def check_local_tools() -> None:
-    """The local half of the tool list, and its two ways of going wrong.
-
-    Local tools are declared unprefixed alongside the namespaced worker tools,
-    in one `tools` array the API requires to be unique across *both* halves. And
-    once both halves exist, a turn can mix them — which is the only place in the
-    codebase where tool_results are assembled from two different executors.
+    """The local half of the tool list: its names must be legal and unique
+    across both halves, and a turn mixing local and worker calls assembles
+    tool_results from two executors.
     """
     print("local tools")
     from core import local_tools
@@ -391,11 +359,8 @@ def check_local_tools() -> None:
     from core.computer import COMPUTER_TOOL
     from core.tools import ToolManager
 
-    # A client TOOLSET entry (currently just computer.COMPUTER_TOOL) carries
-    # no "name" at all — its member tools are generated server-side from the
-    # dated `type` string, never spelled out in this array — so every check
-    # below that means "a local tool's *name*" has to filter those out rather
-    # than assume every TOOLS entry has one.
+    # A toolset entry (computer.COMPUTER_TOOL) has no "name", so checks on
+    # local tool names skip entries without one.
     named = [t for t in local_tools.TOOLS if "name" in t]
     names = [t["name"] for t in named]
     check("local tools are declared", len(names) > 0, f"{len(names)} found")
@@ -433,10 +398,9 @@ def check_local_tools() -> None:
         str(set(declared) & set(names)),
     )
 
-    # A mixed turn: local, worker, local, unknown. Every block owes exactly one
-    # result, and the order must survive being split across two executors.
-    # `_run_tool_uses` never touches claude_service, so a cast keeps the check
-    # focused on routing rather than dragging a live API client in.
+    # A mixed turn (local, worker, local, unknown): one result per block, in
+    # order. `_run_tool_uses` never touches claude_service, so a cast stands in
+    # for it.
     chat = Chat(
         claude_service=cast(Claude, None),
         clients={"w": worker},
@@ -470,35 +434,10 @@ def check_local_tools() -> None:
 
 
 def check_docs_match_code() -> None:
-    """The other three ResearchMesh forks (Linux, Mac, Windows) all share a
-    near-identical version of this check: a regex hunts README.md/CLAUDE.md
-    for a stated tool COUNT ("N local tools", etc.) and asserts it equals
-    `len(local_tools.TOOLS)`. That exact check does NOT fit this fork,
-    confirmed by reading both docs rather than assumed — porting it
-    verbatim would either silently pass on a coincidence or permanently
-    fail on a doc that was never wrong in the first place:
+    """README.md states a tool count that must equal `len(local_tools.TOOLS)`.
 
-      - README.md DOES state a plain count ("**23 local tools**", "the 23
-        local tools alone") consistently, so that half of the borrowed
-        check is reused unchanged below.
-      - CLAUDE.md deliberately NEVER states a raw tool-count number
-        anywhere. It documents the local half of the tool list via a
-        "Where it came from" file-provenance table instead — which
-        modules were copied verbatim from ResearchMesh vs. diverged — a
-        real, intentional style choice suited to this fork's specific
-        job (tracking inheritance), not an oversight. A borrowed numeric
-        check would have nothing to find here and either false-fail
-        ("no tool-count phrasing found") forever or need to be silently
-        skipped, neither of which actually checks anything.
-
-    So CLAUDE.md gets a DIFFERENT check instead, one that matches what it
-    actually promises: every local-tool-backing module file that
-    `core/local_tools.py` really imports should be mentioned SOMEWHERE in
-    CLAUDE.md (its provenance table or otherwise) — so a new tool module
-    added to MODULES without a single word added to CLAUDE.md fails
-    loudly, which is the same "silent doc drift" this whole check family
-    exists to catch, just aimed at the promise THIS file's docs actually
-    make rather than a borrowed one they don't.
+    CLAUDE.md states no count, so it is checked differently: every module file
+    that `core/local_tools.py` imports must be named somewhere in CLAUDE.md.
     """
     print("docs vs code")
     import inspect
@@ -536,14 +475,9 @@ def check_docs_match_code() -> None:
 
 
 def check_dagent_and_workers() -> None:
-    """`/dagent` must withhold the local tools, not merely discourage them.
-
-    The whole point is that it is mechanical: a local `bash` is faster and more
-    directly matched to any concrete command than a `delegate` that takes
-    minutes, so an instruction is a preference the model can talk itself out of
-    and an absent schema is not. If a refactor ever reverts this to a prompt
-    tweak, every other check here still passes and the failure is invisible —
-    the model just quietly does a worker's job on the wrong machine.
+    """`/dagent` must withhold the local tools, not discourage them: an
+    instruction is a preference the model can argue out of, an absent schema
+    is not.
     """
     print("/dagent and /workers")
     from core import local_tools
@@ -617,13 +551,8 @@ def check_dagent_and_workers() -> None:
 
 
 def check_clear_and_diagnostics() -> None:
-    """`/clear`, and telling the two persistent 400s apart.
-
-    Both leave the router failing every turn with no way back, and from the
-    outside they look the same. The orphan detector is what separates them, so
-    it is checked against a history that is deliberately poisoned — the
-    condition `_resolve_pending_tool_uses` exists to prevent, constructed here
-    on purpose because a passing router never produces one.
+    """`/clear` and the failure report, against a deliberately poisoned history
+    (an unanswered tool_use), which a working router never produces.
     """
     print("/clear and diagnostics")
     from core.chat import Chat, _approx_size, _orphaned_tool_uses
@@ -687,26 +616,14 @@ def check_clear_and_diagnostics() -> None:
 
 
 def check_run_loop_tool_use_lifecycle() -> None:
-    """Drive the real, unmodified `Chat.run()` against a scripted fake API:
-    the cutoff-duplicate bug, self-healing an already-poisoned history
-    (reproduces the actual ResearchMesh production error, same core/chat.py
-    lineage before this port), pause_turn replace-not-append, a mandatory
-    mixed-call follow-up, grace-budget-exhausted surgical excision (never a
-    turn/conversation wipe), and a normal multi-round regression guard.
+    """Drive the real `Chat.run()` against a scripted fake API: the
+    iteration-cutoff duplicate tool_result, healing an already-poisoned
+    history, pause_turn replace-not-append, a mandatory mixed-call
+    follow-up, grace-budget-exhausted excision, and a normal multi-round
+    turn.
 
-    Ported from ResearchMesh's smoke_test.py (same-named function) alongside
-    the core/chat.py fix itself (commit 672aae1 there). The only structural
-    difference from the original: this router calls `ToolManager.build`
-    (returning a `ToolIndex`) rather than ResearchMesh's `get_all_tools`, so
-    the fake here returns a minimal fake index instead of a bare list —
-    everything else (the six scenarios, the assertions) is the same
-    reproduction of the same bug class, since this router is reachable by it
-    too (it also declares web_search/web_fetch as real Anthropic server
-    tools — see core/claude_learned_schemas.py).
-
-    See ResearchMesh's researchmesh_client_dev_log.md for the full incident
-    history behind each scenario — not duplicated here since it's the same
-    root cause, ported.
+    The fake returns a minimal ToolIndex because `ToolManager.build` returns
+    one.
     """
     print("run() loop: tool_use lifecycle (cutoff, self-heal, pause_turn, mixed calls)")
     import core.chat as chat_mod
@@ -767,12 +684,9 @@ def check_run_loop_tool_use_lifecycle() -> None:
             return item
 
     class FakeIndex:
-        """Minimal stand-in for core.tools.ToolIndex — only what run()'s
-        non-remote_only path actually touches: `.tool_defs` (concatenated
-        onto local_tools.TOOLS) and `.summary()` (a one-line announce
-        print). Every scenario here runs the ordinary local-tools branch,
-        so `.defs_for`/`.worker_ids` (the remote_only path) are never
-        called and aren't stubbed."""
+        """Minimal stand-in for core.tools.ToolIndex: only `.tool_defs` and
+        `.summary()`, which the non-remote_only path touches.
+        """
         tool_defs: ClassVar[list] = []
 
         def summary(self):
@@ -1023,22 +937,12 @@ def check_run_loop_tool_use_lifecycle() -> None:
             result6 == "done for real", result6,
         )
 
-        # --- 7: cross-turn orphan repair must satisfy the API's REAL
-        # "immediately after" adjacency rule, not just "answered somewhere
-        # later" (which is all `_orphaned_tool_uses` itself checks). Ported
-        # from ResearchMesh's smoke_test.py alongside the core/chat.py fix
-        # that closes this exact gap — same bug class, same root cause: a
-        # tool_use orphan survived to the start of a brand new turn
-        # (nothing else after it yet), `run()` appended the new user query
-        # first as always, the OLD repair then answered the orphan by
-        # appending to the tail — one message too late, since the new query
-        # was already sitting between the tool_use and the synthetic
-        # result. The retry 400'd on the *same* id the repair had just
-        # "fixed". `FakeClaudeService` above never catches this class of
-        # bug because it only pops a canned script — it never actually
-        # validates the message shape it's handed. This scenario uses a
-        # stricter fake that does, so a regression here fails loudly
-        # instead of shipping unnoticed again.
+        # --- 7: cross-turn orphan repair must satisfy the API's "immediately
+        # after" rule, not only "answered somewhere later" (all
+        # `_orphaned_tool_uses` checks). An orphan survived into a new turn,
+        # `run()` appended the new query first, and appending the repair to the
+        # tail landed it one message late. This scenario uses a fake that
+        # validates message shape, which `FakeClaudeService` does not.
         class FakeClaudeServiceStrictAdjacency(FakeClaudeService):
             def chat(self, messages, system=None, stop_sequences=None,
                       tools=None, thinking=False):
@@ -1084,11 +988,9 @@ def check_run_loop_tool_use_lifecycle() -> None:
             FakeResponse("end_turn", [FakeBlock("text", text="all better now")]),
         ])
         c7 = Chat(claude_service=fake7, clients={})  # type: ignore[arg-type]
-        # The orphan sitting as the very last message -- e.g. the previous
-        # turn ended on a max_tokens cutoff mid tool_use (see scenario 8
-        # below for why that specific trigger no longer even reaches this
-        # state anymore -- this scenario proves the repair itself is
-        # correct independent of how the orphan got there).
+        # The orphan is the last message (the previous turn ended on a
+        # max_tokens cutoff mid tool_use); the repair is checked independent of
+        # how the orphan arose.
         c7.messages = [
             {"role": "user", "content": "write core/zsh_session.py"},
             {"role": "assistant", "content": "Let me write it."},
@@ -1111,17 +1013,9 @@ def check_run_loop_tool_use_lifecycle() -> None:
             "all better now" in result7, result7,
         )
 
-        # --- 8: a max_tokens cutoff mid tool_use must finalize the turn
-        # immediately, not silently return as if it were an ordinary
-        # finished response. Ported alongside scenario 7 -- this is the
-        # actual root trigger behind that scenario's bug class in
-        # production: a single large `create` call (a whole new source
-        # file as one tool_use) ran past the output token budget,
-        # `stop_reason` came back "max_tokens" (not "tool_use"), and the
-        # old code only ever routed/answered tool_use blocks when
-        # `stop_reason == "tool_use"` -- so the dangling block was
-        # appended to history and then just ignored, left to poison every
-        # later turn.
+        # --- 8: a max_tokens cutoff mid tool_use must finalize the turn at
+        # once. stop_reason is "max_tokens", not "tool_use", so the dangling
+        # block was never answered.
         chat_mod.MAX_TOOL_ITERATIONS = 75
         orphan_id8 = "toolu_FRESHCUTOFF"
         fake8 = FakeClaudeService([
@@ -1156,20 +1050,12 @@ def check_run_loop_tool_use_lifecycle() -> None:
 
 
 def check_model_command() -> None:
-    """`/model` / `/model swap` — config.toml wiring and index/name matching.
+    """`/model` and `/model swap`: config.toml wiring and index/name matching
+    for the router's own reasoning model (`self.agent.claude_service`); no
+    worker is touched.
 
-    Ported from ResearchMesh (see adding-model-command-to-swap-between-
-    Anthropic-models.md in ResearchMesh's own /memories for the full design
-    history). Covers only the ROUTER's OWN reasoning model
-    (self.agent.claude_service) — nothing here touches a connected worker.
-
-    No API call and no CliApp/prompt_toolkit involved: `load_claude_models`
-    and `resolve_model_swap` (core/claude.py) are pure enough to check
-    directly, the same way check_clear_and_diagnostics() above checks
-    core/chat.py's diagnostics without a real conversation. core/cli.py's
-    `/model` branch is a thin print/continue wrapper around these two calls,
-    so covering the calls covers the actual matching logic that a bad
-    index/name could otherwise silently mismatch.
+    Checks `load_claude_models` and `resolve_model_swap` (core/claude.py)
+    directly; core/cli.py's `/model` is a thin wrapper around them.
     """
     print("/model command")
     from core.claude import load_claude_models, resolve_model_swap
@@ -1216,31 +1102,14 @@ def check_model_command() -> None:
 
 
 def check_model_refresh() -> None:
-    """fetch_live_models()/refresh_claude_models() — the live-scan + TTL cache
-    behind config.toml's claude_models array.
+    """fetch_live_models() and refresh_claude_models(): the live scan and TTL
+    cache behind config.toml's claude_models array.
 
-    Ported from ResearchMesh (same file/history pointer as
-    check_model_command() above). Neither function is exercised by
-    check_model_command() above (that one only covers the pre-existing
-    load_claude_models()/resolve_model_swap()). Both accept fake
-    collaborators for exactly this reason — fetch_live_models takes a
-    `client`, refresh_claude_models takes `config_path`/`fetch_fn` — the
-    same dependency-injection shape check_clear_and_diagnostics() above uses
-    (a FakeBlock duck-typing a real content block). No network, no real
-    config.toml touched, no tempfile left behind.
-
-    refresh_claude_models's whole point is "never write on failure, only ever
-    write on a successful scan" — that is asserted directly here (byte-for-
-    byte file comparison before/after), not just exercised incidentally, so a
-    future edit that weakens that guarantee fails loudly instead of only
-    showing up as a mystery CI config.toml diff months later. tomlkit is
-    imported lazily inside refresh_claude_models() only on a successful
-    scan's write — if it isn't installed (true for this repo's own CI
-    dependency set, see the module docstring above), the success-path write
-    is skipped in favour of a documented fallback (return the fresh result,
-    persist nothing), and this check verifies whichever behaviour is
-    actually correct for the environment it's running in, rather than
-    assuming tomlkit is present.
+    Both take fake collaborators (`client`; `config_path` and `fetch_fn`), so
+    no network and no real config.toml is touched. A failed scan must never
+    write, asserted by comparing the file byte for byte. Without tomlkit the
+    success path returns the fresh result and persists nothing; the check
+    accepts whichever behaviour fits the environment.
     """
     print("model refresh (fetch_live_models / refresh_claude_models)")
     import importlib.util
@@ -1352,9 +1221,8 @@ def check_model_refresh() -> None:
     finally:
         cfg.unlink(missing_ok=True)
 
-    # 2) TTL stale + scan succeeds -> array + timestamp updated (if tomlkit
-    #    is installed) or the fresh result is still returned but not
-    #    persisted (if it isn't) — either way is the documented contract.
+    # 2) TTL stale + scan succeeds -> array and timestamp updated (with
+    # tomlkit), or the fresh result returned and not persisted (without).
     cfg = tmp_dir / "smoke_model_refresh_success.toml"
     write_config(cfg, models=["old-a"], checked_at=stale_iso)
     before = cfg.read_text(encoding="utf-8")
@@ -1385,8 +1253,8 @@ def check_model_refresh() -> None:
     finally:
         cfg.unlink(missing_ok=True)
 
-    # 3) TTL stale (well past due) + scan fails -> config untouched, old
-    #    cache returned. This is the exact CI/placeholder-key scenario.
+    # 3) TTL well past due + scan fails -> config untouched, old cache
+    # returned.
     cfg = tmp_dir / "smoke_model_refresh_failure.toml"
     write_config(cfg, models=["old-cached"], checked_at=stale_iso)
     before = cfg.read_text(encoding="utf-8")
@@ -1428,26 +1296,13 @@ def check_model_refresh() -> None:
 
 
 def check_model_worker_dispatch() -> None:
-    """`/model <worker> [swap <name/index>]` — the worker-reach-in half of
-    `/model`, which check_model_command() above explicitly does NOT cover
-    (its own docstring says so — it only tests the ROUTER's own reasoning
-    model). This is the one piece of the whole /model feature that is a
-    genuine cross-process contract: a live Router asking a live, separately
-    -versioned ResearchMesh worker to change its own state over MCP.
+    """`/model <worker> [swap <name/index>]`: the worker reach-in half of
+    `/model`, a cross-process contract (the router asks a separately
+    versioned worker to change its own state over MCP).
 
-    Covers Chat.resolve_worker_model_request() (sync, pure — the
-    precedence-critical worker-name-vs-subcommand-name decision) and
-    Chat.call_worker_model() (async — the actual fallible MCP call plus
-    response formatting), both extracted from core/cli.py's `/model` branch
-    specifically so this is testable without a live REPL or a real worker
-    subprocess — see adding-model-command-to-swap-between-Anthropic-
-    models.md in ResearchMesh's own /memories, Section 3G, for the full
-    story of why this gap existed and was closed.
-
-    In particular, this is what regression-protects the adversarial case
-    the user asked to be reviewed live earlier (a worker literally named
-    "swap") — that was previously verified only via a one-off
-    interactive_run session, never captured as a repeatable check.
+    Covers Chat.resolve_worker_model_request() (pure: a worker name wins over a
+    subcommand of the same name) and Chat.call_worker_model() (the MCP call and
+    response formatting), including a worker literally named "swap".
     """
     print("/model <worker> dispatch (resolve_worker_model_request / call_worker_model)")
     from core.chat import Chat

@@ -16,27 +16,22 @@ Transport = Literal["stdio", "sse", "http"]
 
 
 class MCPClient:
-    """MCP client supporting stdio, SSE, and Streamable HTTP transports.
+    """MCP client supporting stdio, SSE and Streamable HTTP transports.
 
     - stdio: spawns a local server process (`command` + `args`).
     - sse:   connects to a remote server's SSE endpoint (`url`).
     - http:  connects to a remote server's Streamable HTTP endpoint (`url`).
 
-    For the remote transports (sse / http) `headers` may be given for auth,
-    e.g. {"Authorization": "Bearer <token>"} for a server using Bearer auth.
+    For the remote transports `headers` may carry auth, e.g. {"Authorization":
+    "Bearer <token>"}.
 
-    `timeout_seconds` is this fork's one addition, and leaving it unset is not
-    a real choice in practice. Both defaults are far too short for a worker that runs a whole
-    agentic loop before replying: `create_mcp_http_client` defaults to a 300s
-    read timeout, and a single `delegate` call driving a GUI can run for many
-    minutes — the reference Claude Code config for the same server already sets
-    900s. Left at the default, a long delegation dies on the wire with the work
-    already done and unrecoverable on this side.
-
-    It is applied in two places, because they time out independently:
-      - the httpx2 read timeout, which governs waiting on the HTTP response;
-      - ClientSession's `read_timeout_seconds`, the MCP-level per-request
-        deadline (a plain float in mcp 2.x; it was a timedelta in 1.x).
+    `timeout_seconds` is this fork's addition and should be set: the defaults
+    are too short for a worker that runs a whole agentic loop before replying
+    (`create_mcp_http_client` reads for 300s; one `delegate` call driving a GUI
+    can run for many minutes). It applies in two places that time out
+    independently: the httpx2 read timeout (waiting on the HTTP response) and
+    ClientSession's `read_timeout_seconds` (the MCP per-request deadline; a
+    plain float in mcp 2.x, a timedelta in 1.x).
     """
 
     def __init__(
@@ -101,15 +96,14 @@ class MCPClient:
     async def _connect_http(self):
         if not self._url:
             raise ValueError("http transport requires a `url`")
-        # Streamable HTTP is what most remote MCP servers expose today (n8n's
-        # MCP Server Trigger, and anything built on the high-level server). It
-        # was `streamablehttp_client` in mcp 1.x, and it also dropped this
-        # transport's `headers=` argument in 2.0: HTTP settings now come from an
-        # httpx2 client you build yourself. `create_mcp_http_client`
-        # is the SDK's own factory, so the recommended MCP timeouts still apply —
-        # a bare `httpx2.AsyncClient(headers=...)` would silently drop them.
-        # Passing a client also transfers its lifecycle to us (the transport only
-        # closes one it created itself), hence entering it on the exit stack.
+        # Streamable HTTP is what most remote MCP servers expose. mcp 2.0
+        # renamed it from `streamablehttp_client` and dropped its `headers=`
+        # argument: HTTP settings now come from an httpx2 client built here.
+        # `create_mcp_http_client` is the SDK's factory, so the recommended MCP
+        # timeouts still apply; a bare `httpx2.AsyncClient(headers=...)` would
+        # drop them. A passed-in client's lifecycle is ours (the transport
+        # closes only a client it created), hence it is entered on the exit
+        # stack.
         http_client = None
         if self._headers or self._timeout_seconds:
             timeout = None
@@ -120,11 +114,9 @@ class MCPClient:
                 # it directly.
                 import httpx2
 
-                # Long read, short connect — deliberately asymmetric. The read
-                # budget is for a worker that is genuinely busy for minutes; the
-                # connect budget is for a worker that is switched off, and
-                # should fail in seconds rather than hanging the whole turn for
-                # a quarter of an hour.
+                # Long read, short connect: the read budget is for a worker
+                # busy for minutes; the connect budget is for a worker that is
+                # switched off, which should fail in seconds.
                 timeout = httpx2.Timeout(
                     float(self._timeout_seconds), connect=15.0
                 )
@@ -190,14 +182,12 @@ class MCPClient:
 async def main():
     import os
 
-    # Imported inside the function, not at module scope, because main.py imports
-    # *this* module — at module scope that is a circular import. Reusing its
-    # `build_client` / `_expand_paths` is the entire point: a standalone check is
-    # only worth running if it builds each client exactly the way the app does.
-    # Doing it by hand here is what made this command claim `unreal` was
-    # unreachable while `python main.py` connected to it perfectly well — it
-    # forced `transport="http"` on every entry, so a stdio entry (`command`, no
-    # `url`) failed on a missing URL, and `~`/`$USER` were never expanded either.
+    # Imported inside the function because main.py imports this module (a
+    # module-level import would be circular). Reusing `build_client` and
+    # `_expand_paths` makes this standalone check build each client exactly as
+    # the app does: a hand-built client forced `transport="http"` on every
+    # entry and never expanded `~`/`$USER`, so a stdio entry failed on a
+    # missing URL.
     import main as app
 
     override_headers = None

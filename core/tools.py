@@ -1,41 +1,22 @@
-"""The MCP <-> Anthropic bridge, rebuilt for routing to many workers.
+"""The MCP <-> Anthropic bridge, built for routing to many workers.
 
-This is the one file that genuinely differs from ResearchMesh's copy, and it is
-the whole reason this repo exists. Three changes, each fixing something that
-makes a fleet of identical workers impossible:
+Differs from ResearchMesh's copy in three ways:
 
-1. **Tool names are namespaced.** ResearchMesh passes `t.name` through verbatim.
-   That is fine with one server; with three ResearchMesh workers it sends three
-   tools all called `delegate` and the API rejects the request outright:
+1. Tool names are namespaced. Every tool is declared as `<worker>__<tool>`
+(several workers expose `delegate`, and duplicate names are a 400: `Tool names
+must be unique`), and the prefix is stripped before the call goes to the
+worker.
+2. Worker identity is injected: the `description` of a `[mcp].servers` entry is
+prepended as a `[worker: name] ...` header, because workers describe themselves
+identically. It lives in config, so no worker redeploy is needed and
+non-ResearchMesh servers work.
+3. Execution fans out: tool_use blocks are grouped by owning worker, groups run
+concurrently and blocks within a group run in order, because a ResearchMesh
+worker serialises calls behind one lock (one mouse, one browser page, one
+kernel).
 
-       400 invalid_request_error: tools: Tool names must be unique.
-
-   Every tool is therefore declared as `<worker>__<tool>` and the prefix is
-   stripped again before the call goes out over the wire. The worker never
-   learns it was renamed.
-
-2. **Worker identity is injected into the description.** Namespacing alone gets
-   you `gpu__delegate` and `winbox__delegate` carrying *byte-identical* text —
-   `mcp_server.py` hardcodes one `_DELEGATE_DESCRIPTION` constant, so every
-   worker in the fleet describes itself the same way and the model has nothing
-   to route on. The `description` field of a `[mcp].servers` entry is prepended
-   as a `[worker: name] ...` header. Config-side rather than worker-side on
-   purpose: it needs no coordinated redeploy, and it works against MCP servers
-   that aren't ResearchMesh at all.
-
-3. **Execution fans out.** ResearchMesh runs tool_use blocks in a plain `for`
-   loop. Three four-minute delegations there take twelve minutes; here they
-   take four. Blocks are grouped by owning worker and the *groups* run
-   concurrently — sequential within a group, because a ResearchMesh worker
-   holds one mouse, one browser page and one IPython kernel behind its own
-   `asyncio.Lock`. Firing two calls at one worker would not make it faster; it
-   would just park the second on that lock until it timed out.
-
-One structural change falls out of this: the tool index is built once per user
-turn by `Chat` and handed to `execute_blocks`, instead of every execution pass
-re-deriving owners with a fresh `list_tools` round trip per client. Over a LAN
-that was invisible. Against workers on other machines it is a round trip per
-worker per iteration, up to MAX_TOOL_ITERATIONS times a turn.
+`Chat` builds the tool index once per user turn and passes it to
+`execute_blocks`, instead of a `list_tools` round trip per worker per pass.
 """
 
 import asyncio
@@ -50,17 +31,12 @@ from mcp.types import CallToolResult, ImageContent, TextContent, Tool
 
 
 class Worker(Protocol):
-    """The two methods this bridge actually needs from a worker.
+    """The two methods this bridge needs from a worker.
 
-    Structural rather than `MCPClient` on purpose. Nothing here depends on the
-    transport, so a protocol both states that honestly and lets smoke_test.py
-    exercise the namespacing and fan-out against fakes without a live fleet —
-    which is the difference between those invariants being tested and merely
-    being asserted in a comment.
-
-    Note `Mapping` rather than `dict` wherever a fleet is passed around: dict is
-    invariant in its value type, so `dict[str, MCPClient]` would not satisfy
-    `dict[str, Worker]` even though every MCPClient is one.
+    A structural type, not `MCPClient`, so smoke_test.py can exercise
+    namespacing and fan-out against fakes. Fleets are passed as `Mapping`,
+    because `dict` is invariant in its value type and `dict[str, MCPClient]`
+    would not satisfy `dict[str, Worker]`.
     """
 
     async def list_tools(self) -> list[Tool]: ...
@@ -70,10 +46,9 @@ class Worker(Protocol):
     ) -> CallToolResult | None: ...
 
 
-# Separator between the worker prefix and the worker's own tool name. Double
-# underscore matches what Claude Code uses for the same job (`mcp__server__tool`),
-# so the shape is already familiar to the model, and a single underscore would
-# be ambiguous against the many tool names that contain one.
+# Separator between the worker prefix and the tool name. Double underscore
+# matches Claude Code's `mcp__server__tool`; a single one is ambiguous against
+# tool names that contain one.
 SEPARATOR = "__"
 
 # The Anthropic API constrains tool names to ^[a-zA-Z0-9_-]{1,128}$. A worker
@@ -149,11 +124,9 @@ class ToolIndex:
     def worker_ids(self) -> list[str]:
         """Workers that answered `list_tools` this turn, in declaration order.
 
-        This is the fleet as it exists *right now*, which is what `/workers`
-        reports and what `/dagent <name>` resolves against. A worker that failed
-        to connect never reached this index, and one that died since startup was
-        dropped by `build`; either way it is not here, and both are the same
-        thing from the model's point of view — a machine it cannot reach.
+        The fleet as it is now, which is what `/workers` reports and `/dagent
+        <name>` resolves against. A worker that failed to connect, or died
+        since startup, is absent.
         """
         seen: dict[str, None] = {}
         for worker_id in self._workers.values():
@@ -190,21 +163,13 @@ class ToolManager:
         """List every worker's tools and namespace them into one flat set.
 
         `descriptions` maps a worker id to the routing blurb from its
-        config.toml entry — what that box *is*, which is the thing the model
-        needs and the worker itself cannot tell it.
+        config.toml entry. `reserved` is names already used elsewhere in the
+        request (the router's unprefixed local tools): uniqueness is enforced
+        across the whole `tools` array, and a collision is a 400 for the entire
+        request.
 
-        `reserved` is names already spoken for elsewhere in the request — in
-        practice the router's own local tools, which are declared unprefixed
-        alongside this index. Uniqueness is enforced across the whole `tools`
-        array, not per source, so a name this builder cannot see is still a name
-        it must not emit. A collision is unlikely (a namespaced tool contains
-        `__` and a local one does not), but the cost of one is a 400 that takes
-        down the entire request rather than the single tool.
-
-        A worker that fails to answer `list_tools` is skipped with a warning
-        rather than taking the turn down; it may have died since startup, and
-        the rest of the fleet is still usable. That matches how main.py treats a
-        worker that fails to connect in the first place.
+        A worker that fails `list_tools` is skipped with a warning, as main.py
+        does for a worker that fails to connect.
         """
         index = ToolIndex()
         used: set[str] = set(reserved or ())
@@ -239,13 +204,12 @@ class ToolManager:
                     {
                         "name": declared,
                         "description": description,
-                        # mcp 2.0 renamed the model fields to snake_case
+                        # mcp 2.0 renamed model fields to snake_case
                         # (`inputSchema` -> `input_schema`, `isError` ->
-                        # `is_error`, `mimeType` -> `mime_type` below). The
-                        # camelCase spellings survive as serialization aliases,
-                        # so constructing still works either way — but attribute
-                        # *reads* like this one do not, and fail at runtime
-                        # rather than at import.
+                        # `is_error`, `mimeType` -> `mime_type`). The camelCase
+                        # spellings survive as serialization aliases, so
+                        # constructing works either way, but attribute reads
+                        # fail at runtime, not at import.
                         "input_schema": tool.input_schema,
                     },
                 )
@@ -357,20 +321,12 @@ class ToolManager:
     ) -> list[ToolResultBlockParam]:
         """Run every tool_use block, fanning out across workers.
 
-        Grouped by owning worker: groups run concurrently, blocks within a group
-        run in order. That mirrors the constraint on the other end — a
-        ResearchMesh worker serialises `delegate` behind an `asyncio.Lock`
-        because it has one mouse, one browser page and one kernel — so issuing
-        two calls at once to the same worker buys nothing and risks the second
-        aging out on that lock while it waits.
-
-        `max_parallel` caps how many workers are busy at once, bounding both
-        simultaneous API spend downstream and how badly the logs interleave.
-
-        Results come back in the original block order. The API does not require
-        that, but a tool_result list that matches the tool_use list makes a
-        transcript readable, and every block is guaranteed exactly one result —
-        an unanswered tool_use poisons every later request in the session.
+        Grouped by owning worker: groups run concurrently, blocks within a
+        group run in order, because a ResearchMesh worker serialises `delegate`
+        behind a lock and a second concurrent call would only wait on it.
+        `max_parallel` caps how many workers are busy at once. Results come
+        back in the original block order, and every block gets exactly one
+        result, since an unanswered tool_use poisons every later request.
         """
         if not tool_use_blocks:
             return []

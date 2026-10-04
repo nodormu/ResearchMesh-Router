@@ -1,55 +1,27 @@
-"""Record audio from your own configured microphone for a bounded window and
-transcribe it locally via faster-whisper (CPU, no cloud STT).
+"""Record audio from the configured microphone for a bounded window and
+transcribe it locally with faster-whisper (CPU, no cloud STT).
 
-Same motivation and shape as `speak.py`/`vision.py`/`text_embeddings.py`:
-self-hosted, config-driven, declared to Claude either way so a fresh clone
-doesn't need a code change to gain the capability once configured. It does
-nothing until `config.toml` has `[listen]` set up — see that block for
-what's required.
+Self-hosted and config-driven like `speak.py`, `vision.py` and
+`text_embeddings.py`; it does nothing until `config.toml` has `[listen]` set
+up. It can decline to record for two reasons, returned as a `status` field, not
+raised:
+  - "disabled": `[listen].enabled` is false. Checked before `device`, so the
+microphone is never opened.
+  - "not_configured": `[listen].device` is unset.
 
-Two independent reasons this can decline to record, both returned as a
-`status` field rather than raised, matching `speak.py`'s pattern:
-  - `"disabled"`       — `[listen].enabled` is explicitly false. Checked
-                          BEFORE `device`, so a disabled tool never opens
-                          the microphone at all. This is a genuinely
-                          different switch from the one below: it can be
-                          flipped even when a device is fully configured
-                          and working — e.g. to guarantee the mic stays
-                          closed for a while without losing/unsetting
-                          `device`.
-  - `"not_configured"` — `[listen].device` is unset. Same "not wired up
-                          yet, here's what to do about it" shape
-                          `vision_query`/`speak` use for a missing
-                          server URL / voice model.
+Settings are re-read from config.toml on every call.
 
-Settings are re-read from config.toml on every call (not cached at import),
-so editing `enabled`/`device`/`model_size`/durations takes effect on the
-very next call, no restart needed — same as every other config-driven tool
-here.
+Capture is one subprocess (`timeout <N> parecord ...`) and transcription is one
+in-process call (`WhisperModel(...).transcribe(...)`): faster-whisper has no
+CLI, unlike Piper in `speak.py`.
 
-Real asymmetry from `speak.py`, worth knowing before touching this file:
-`speak.py` shells out to TWO subprocesses (`python3 -m piper`, then
-`paplay`) because Piper is designed as a CLI tool. `faster-whisper` has no
-equivalent CLI entry point — it's a Python library, used via
-`from faster_whisper import WhisperModel` directly IN-PROCESS. So this
-module has ONE subprocess call (`timeout <N> parecord ...`, for capture)
-and ONE in-process library call (`WhisperModel(...).transcribe(...)`, for
-transcription) — not two subprocesses.
+`timeout <N> parecord` exits 124 when it cuts the recording off after N
+seconds. That is the normal success case; the WAV is written correctly. Only
+other non-zero exit codes (device busy, bad device name) are capture failures.
 
-⚠️ `timeout <N> parecord ...` exits with code 124 when it cuts the
-recording off after N seconds — THAT IS THE NORMAL, EXPECTED SUCCESS CASE
-here, not a failure (confirmed empirically: the WAV file is still written
-correctly). Only OTHER non-zero exit codes (device busy, bad device name,
-etc.) indicate a real capture failure. Do not naively treat any non-zero
-exit as an error — this was checked live before writing this file, not
-assumed.
-
-Requires:  pip install faster-whisper   (already installed and proven this
-                                          session — CPU/int8, no GPU needed)
-           A working PipeWire microphone source — see
-           camera_mic_hardware_testing_plan.md (in /memories) for the
-           `pactl list sources short` device-discovery command and the
-           gain-tuning note (mic input volume matters a lot for accuracy).
+Requires:  pip install faster-whisper (CPU/int8, no GPU needed)
+           A PipeWire microphone source; `pactl list sources short` lists
+devices, and mic input volume matters a lot for accuracy.
 """
 
 import asyncio
@@ -110,27 +82,12 @@ def handles(name: str) -> bool:
     return name in _TOOL_NAMES
 
 
-# `faster-whisper`'s `model.transcribe()` returns a LAZY generator for
-# segments (confirmed live via its own source: `generate_segments` itself
-# contains `yield`) — the real per-segment decoding work happens when the
-# caller iterates it, not when `transcribe()` is called. `model.transcribe()`
-# alone does real work too (feature extraction, language detection), but a
-# timeout that only wrapped that call and not the segment consumption right
-# after it would be protecting the wrong, shorter part of the work and leave
-# the actual long-running part completely unguarded — confirmed by timing
-# both parts separately on a realistic-length clip before writing this.
-#
-# faster-whisper has no CLI entry point (see module docstring), so unlike
-# the capture step above, there is no subprocess here to SIGKILL if this
-# hangs — same fundamental limitation core/midi1.py already documents for
-# its own in-process C-extension calls: `asyncio.wait_for` bounds the
-# CALLER'S wait, but cannot force the underlying thread to stop.
-#
-# Budget: measured ~2.6s total (model load + transcribe + join) for a full
-# 30s clip on this machine — call it ~12x real-time. `max(60, duration*4)`
-# is a generous multiple of that with real margin for a slower CPU or a
-# bigger configured model_size, while still bounding a genuinely
-# pathological hang to a bounded wait rather than an unbounded one.
+# `model.transcribe()` returns a lazy generator: per-segment decoding happens
+# when the caller iterates it, so the timeout must cover the iteration as well
+# as the call. faster-whisper has no subprocess to kill, so `asyncio.wait_for`
+# bounds only the caller's wait, not the thread.
+# Budget: about 2.6s for a 30s clip (~12x real time) on this machine; `max(60,
+# duration*4)` leaves margin for a slower CPU or a larger model_size.
 _TRANSCRIBE_TIMEOUT_MIN = 60
 _TRANSCRIBE_TIMEOUT_PER_SECOND = 4
 # Same role as core/midi1.py's _POLL_TIMEOUT_MARGIN: extra headroom so this
@@ -158,12 +115,9 @@ async def execute(name: str, tool_input: dict) -> str:
         config = _load_config()
         duration = _resolve_duration(tool_input, config)
     except Exception:
-        # Timeout SIZING must not itself be able to fail — _run() will hit
-        # and report the SAME config problem properly a moment later; this
-        # just needs a sane fallback so that failure doesn't also break the
-        # ability to time out at all. Matches _resolve_duration's own
-        # hardcoded defaults, so this is the same number config would have
-        # produced anyway on an empty/missing [listen] section.
+        # Sizing the timeout must not itself fail: _run() reports the same
+        # config problem a moment later. Falls back to _resolve_duration's
+        # defaults, the numbers an empty [listen] section would give.
         duration = 8
 
     capture_timeout = duration + 5
@@ -242,13 +196,10 @@ def _run(tool_input: dict) -> str:
         wav_path = tmp.name
 
     try:
-        # 4. Capture. `timeout` exits 124 when it cuts the recording off
-        # after `duration` seconds — that's the expected success case, not
-        # an error (confirmed empirically, see module docstring). The
-        # outer Python `timeout=` is a few seconds LONGER than the
-        # `timeout` command's own bound, so parecord gets a chance to
-        # flush/close the file cleanly after SIGTERM rather than racing an
-        # equally-tight outer deadline.
+        # 4. Capture. `timeout` exits 124 when it cuts the recording at
+        # `duration` seconds: the expected success case. The outer Python
+        # `timeout=` is a few seconds longer than the command's own bound, so
+        # parecord can flush and close the file after SIGTERM.
         capture = subprocess.run(
             [
                 "timeout", str(duration),

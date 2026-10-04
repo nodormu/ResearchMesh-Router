@@ -2,28 +2,17 @@
 
     python e2e_test.py
 
-Unlike `smoke_test.py` this is **not** part of the standard gates: it needs
-ANTHROPIC_API_KEY, makes real requests, and takes ~15s. Run it when you touch
-`core/tools.py`, `core/chat.py`, `mcp_client.py`, or anything about how a turn
-reaches a worker.
+Not part of the standard gates: it needs ANTHROPIC_API_KEY, makes real requests
+and takes about 15s. Run it after touching `core/tools.py`, `core/chat.py`,
+`mcp_client.py` or how a turn reaches a worker.
 
-It exists because `smoke_test.py` proves the router's invariants against fakes
-inside one process, which leaves three claims resting on assertion alone:
+It checks what `smoke_test.py` can only assert against fakes:
 
-  1. that the duplicate-name failure is real. `smoke_test.py` enforces the API's
-     tool-name rule locally, from a regex. This sends both lists to the API and
-     confirms the namespaced one is accepted *and* that the un-namespaced one is
-     rejected — so the premise this whole repo is built on stays falsifiable
-     rather than becoming folklore in a comment;
-  2. that namespacing survives a real MCP transport, not just a Python object
-     pretending to be one;
-  3. that a real model, given only the `[worker: ...]` description headers,
-     actually issues both calls in a single turn — which is what makes the
-     fan-out reachable at all. Correct plumbing that the model never triggers
-     would pass every check in `smoke_test.py`.
+  1. the API rejects the un-namespaced tool list and accepts the namespaced
+  2. namespacing survives a real MCP transport
+  3. the model calls both workers in one turn, from description headers alone
 
-Two `e2e_worker.py` subprocesses stand in for the fleet. See that file for why
-it isn't pointed at a real ResearchMesh install.
+Two `e2e_worker.py` subprocesses stand in for the fleet.
 """
 
 import asyncio
@@ -125,12 +114,11 @@ async def main() -> int:
         api = Anthropic()
 
         # `count_tokens` works here only because `index.tool_defs` is
-        # worker-only. It cannot validate the array the router actually sends:
-        # that one also carries `web_search`/`web_fetch`, and the endpoint
-        # answers "Server tools are not supported in the count_tokens
-        # endpoint" — a 400 that looks like a tool-list problem and is not.
-        # Widen this to include local_tools.TOOLS and you must switch to a real
-        # `beta.messages.create` call.
+        # worker-only. It cannot validate the array the router sends, which
+        # also carries `web_search`/`web_fetch`: the endpoint answers "Server
+        # tools are not supported in the count_tokens endpoint", a 400 that
+        # looks like a tool-list problem. Including local_tools.TOOLS needs a
+        # real `beta.messages.create` call.
         def count(tools) -> tuple[bool, str]:
             try:
                 api.messages.count_tokens(
@@ -171,11 +159,10 @@ async def main() -> int:
         print(f"\n--- router answer ({elapsed:.1f}s) ---\n{answer}\n---")
 
         used = tool_names_used(chat.messages)
-        # Containment, not equality. The router carries 18 local tools of its
-        # own now, so the model may legitimately reach for one during this turn
-        # — that says nothing about the claim under test, which is only that
-        # both *workers* were called off their description headers alone. An
-        # equality check here would fail on an unrelated `bash` call.
+        # Containment, not equality: the router has local tools of its own, so
+        # the model may call one this turn, which says nothing about the claim
+        # under test (both workers were called from their description headers
+        # alone).
         check(
             "the model called both workers from the descriptions alone",
             set(names) <= used,
