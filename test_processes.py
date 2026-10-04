@@ -143,7 +143,7 @@ exit 1
 
 def confirm(mod, *names: str) -> None:
     """Mark entry names as typed by the user, so tests of other behaviour get
-    past the name gate. `check_first_reference_always_forces_selection`
+    past the name gate. `check_entry_needs_user_typed_name`
     tests the gate itself.
     """
     mod._confirmed_secret_entries.update(names)
@@ -249,11 +249,10 @@ def check_secret_redacted_even_when_echoed_back_later(mod) -> None:
           transcript.count("***") == 2, transcript)
 
 
-def check_first_reference_always_forces_selection(mod) -> None:
-    print("send_secret: an entry decrypts only after the USER typed its name -- "
-          "a correct, real name chosen by the model is refused, however many "
-          "times it is repeated (reproduces the live incident where the model "
-          "went straight to the only entry that existed)")
+def check_entry_needs_user_typed_name(mod) -> None:
+    print("send_secret: an entry decrypts only after the USER typed its name; "
+          "a real name chosen by the model is refused, however often it is "
+          "repeated")
     # _select_entry_prompt() reads $PASSWORD_STORE_DIR directly, independent
     # of the faked `pass` binary _FakePassOnPath sets up -- give it its own
     # controlled store so this test doesn't depend on whatever vault state
@@ -394,7 +393,7 @@ def main() -> int:
     print()
     check_send_env_missing_var(mod)
     print()
-    check_first_reference_always_forces_selection(mod)
+    check_entry_needs_user_typed_name(mod)
     print()
     check_send_secret_happy_path(mod)
     print()
