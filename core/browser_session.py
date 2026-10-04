@@ -311,7 +311,12 @@ class Session:
                         proc.kill()
         for leftover in (self._tmpdir, self._staging):
             if leftover is not None:
-                shutil.rmtree(leftover, ignore_errors=True)
+                # Chrome can still be flushing files as it exits.
+                for _ in range(4):
+                    shutil.rmtree(leftover, ignore_errors=True)
+                    if not leftover.exists():
+                        break
+                    await asyncio.sleep(0.4)
 
 
 async def _save_download(download) -> None:
