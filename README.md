@@ -187,11 +187,12 @@ may ask for approval when a session starts, and while it lasts KDE shows a
 "Remote Control" tray icon whose **End** entry stops it (the next action starts a
 new session). It needs `dbus-next` (in `requirements.txt`) and `spectacle` or
 `grim` for screenshots. The screen is one monitor: the leftmost one shared in the
-dialog, or `CLAUDE_COMPUTER_MONITOR=<index>`. Share every monitor in the dialog:
-sharing only one that sits left of another gives a wrongly scaled screenshot.
+dialog, or `CLAUDE_COMPUTER_MONITOR=<index>`. Share every monitor in the dialog.
+With only some shared, the screenshot scale is estimated (exact when they span the
+desktop's width or height) and a warning is printed.
 `CLAUDE_DISPLAY_SIZE=WxH` sets the logical display size declared to the model
-(default `1280x800`). Screenshots go to the model, as for any use of this tool. To use X11/XTEST on an XWayland-only
-setup or inside a nested X server instead:
+(default `1280x800`). Screenshots go to the model, as for any use of this tool.
+To use X11/XTEST on an XWayland-only setup or inside a nested X server instead:
 
 ```bash
 xvfb-run -s '-screen 0 1280x800x24' python main.py   # nested X server

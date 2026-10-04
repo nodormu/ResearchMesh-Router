@@ -358,7 +358,10 @@ worker MCP tools**.
     terminal again. A sentinel match alone is not enough, because a raw-mode
     program such as `less`, `vim` or `top` can echo the sentinel itself. If
     bash does not own the terminal, it respawns a fresh shell through the path
-    `restart: true` uses and returns `state_reset: true`.
+    `restart: true` uses and returns `state_reset: true`. The shell is spawned
+    with SIGINT and SIGQUIT reset to their defaults (`_restore_default_signals`):
+    a router started with them ignored (`nohup cmd &`) would otherwise pass that
+    on, Ctrl-C could not stop a command, and every timeout would end in a respawn.
   - `local_tools.shutdown()` calls `bash_session.shutdown`.
 
 - **`core/processes.py`** — `interactive_run`: spawns a command on a pty and
@@ -411,7 +414,8 @@ worker MCP tools**.
   `pass show` because an uncached GPG key can raise a `pinentry` popup on the
   user's screen, and answering it takes longer than a few seconds; a timeout
   still fails clearly instead of waiting out the whole `interactive_run`
-  timeout.
+  timeout. `pass show` runs in its own process group (`_pass_show`) and a
+  timeout kills the group, so the `gpg` it started does not outlive it.
 
   **Browser.** `browser_fill` takes exactly one of `value` or `value_secret`.
   A `value_secret` goes through the same `resolve_secret()` gate, is typed into
@@ -471,9 +475,12 @@ worker MCP tools**.
     Chrome.
   - The screen is one monitor: the leftmost approved stream, or the index in
     `CLAUDE_COMPUTER_MONITOR`. Screenshots come from `spectacle` or `grim`,
-    cropped to it.
+    cropped to it. Those capture every monitor but only the shared ones are
+    known, so the scale is the smaller of the horizontal and vertical estimates
+    over the shared monitors: exact when they span the desktop's width or
+    height, otherwise estimated, with a one-time console warning.
   - `position()` returns the last pointer position the backend set, because the
-    portal cannot read it back.
+    portal cannot read it back; it raises until the first move.
   - `test_wayland_input.py` drives a fake portal. The real session needs the
     approval dialog and is exercised by hand.
 - **`core/desktop_window.py`** — `desktop_window`: list, focus, move and resize
