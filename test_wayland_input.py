@@ -101,6 +101,11 @@ def main_checks(wi, computer) -> None:
     print("pointer")
     adapter, portal = make(wi)
     check("size is the monitor size", adapter.size() == (1920, 1080))
+    try:
+        adapter.position()
+        check("position is unknown before the first move", False)
+    except RuntimeError as e:
+        check("position is unknown before the first move", "unknown" in str(e), str(e))
     adapter.moveTo(700, 500)
     check("moveTo sends monitor-relative coordinates", portal.events == [("move", 82, 700.0, 500.0)], str(portal.events))
     check("position is tracked", adapter.position() == (700, 500))
@@ -154,6 +159,39 @@ def main_checks(wi, computer) -> None:
         wi._capture_desktop = lambda: desktop_image(scale=2)
         shot = right.screenshot()
         check("a scaled capture is cropped in its own pixels", shot.size == (3840, 2160) and shot.getpixel((10, 10)) == (0, 0, 255))
+        print("sharing only some monitors still crops the chosen one")
+        import contextlib
+        import io
+
+        def only(stream):
+            portal = FakePortal()
+            portal.streams = [stream]
+            return wi.PortalInput(FakeLoop(), portal, stream)
+
+        red, blue = (255, 0, 0), (0, 0, 255)
+        wi._capture_desktop = lambda: desktop_image()
+        wi._scale_warned = False
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            shot = only(STREAMS[1]).screenshot()
+        check("only the left monitor shared: that monitor, not the whole desktop",
+              shot.size == (1920, 1080) and shot.getpixel((10, 10)) == red, str(shot.size))
+        check("a partial share prints the warning once", out.getvalue().count("Share every monitor") == 1, out.getvalue())
+        with contextlib.redirect_stdout(out):
+            only(STREAMS[1]).screenshot()
+        check("the warning is not repeated", out.getvalue().count("Share every monitor") == 1, out.getvalue())
+        shot = only(STREAMS[0]).screenshot()
+        check("only the right monitor shared", shot.size == (1920, 1080) and shot.getpixel((10, 10)) == blue, str(shot.size))
+        wi._capture_desktop = lambda: desktop_image(scale=2)
+        shot = only(STREAMS[1]).screenshot()
+        check("only the left monitor shared, scaled capture",
+              shot.size == (3840, 2160) and shot.getpixel((10, 10)) == red, str(shot.size))
+        wi._scale_warned = False
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            left, _ = make(wi)
+            left.screenshot()
+        check("sharing every monitor prints no warning", out.getvalue() == "", out.getvalue())
     finally:
         wi._capture_desktop = saved
 
@@ -176,6 +214,12 @@ def main_checks(wi, computer) -> None:
     computer._guard = lambda: None
     computer._wayland_session = lambda: True
     try:
+        fresh, _ = make(wi)
+        wi.backend = lambda: fresh
+        out = computer._run("cursor_position", {})
+        check("cursor_position before any move is an error, not a guess",
+              isinstance(out, str) and out.startswith("Error") and "unknown" in out, repr(out)[:100])
+        wi.backend = lambda: adapter
         out = computer._run("left_click", {"coordinate": [640, 400]})
         check("a click at the declared centre lands at the monitor centre",
               portal.events[0] == ("move", 82, 960.0, 540.0) and ("button", 272, 1) in portal.events, str(portal.events))

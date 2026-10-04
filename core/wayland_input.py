@@ -205,7 +205,7 @@ class PortalInput:
         self._loop = loop
         self._portal = portal
         self._stream = stream
-        self._pos = (stream["w"] // 2, stream["h"] // 2)
+        self._pos: tuple[int, int] | None = None  # unknown until the first move
 
     def _call(self, coro):
         try:
@@ -221,13 +221,18 @@ class PortalInput:
         return self._stream["w"], self._stream["h"]
 
     def position(self) -> tuple[int, int]:
-        """Where this backend last moved the pointer; the portal cannot read it back."""
+        """Where this backend last moved the pointer. The portal cannot read the
+        position back, so it is unknown until the first move."""
+        if self._pos is None:
+            raise RuntimeError(
+                "the pointer position is unknown until the pointer has been moved"
+            )
         return self._pos
 
     def moveTo(self, x: float, y: float, duration: float = 0.0) -> None:
         node = self._stream["node"]
         steps = max(1, round(duration / 0.02)) if duration else 1
-        x0, y0 = self._pos
+        x0, y0 = self._pos or (round(x), round(y))
         for i in range(1, steps + 1):
             self._call(self._portal.pointer_to(node, x0 + (x - x0) * i / steps, y0 + (y - y0) * i / steps))
             if steps > 1:
@@ -277,13 +282,34 @@ class PortalInput:
 
     def screenshot(self):
         image = _capture_desktop()
-        right = max(s["x"] + s["w"] for s in self._portal.streams)
-        scale = image.width / right if right else 1
+        # The capture covers every monitor but only the shared ones are known
+        # here, so each axis can overestimate the scale; the smaller estimate is
+        # exact when the shared monitors span the desktop's width or height.
+        right = max(s["x"] + s["w"] for s in self._portal.streams) or 1
+        bottom = max(s["y"] + s["h"] for s in self._portal.streams) or 1
+        sx, sy = image.width / right, image.height / bottom
+        scale = min(sx, sy)
+        if abs(sx - sy) > 0.02 * scale:
+            _warn_partial_share()
         stream = self._stream
         return image.crop((
             round(stream["x"] * scale), round(stream["y"] * scale),
             round((stream["x"] + stream["w"]) * scale), round((stream["y"] + stream["h"]) * scale),
         ))
+
+
+_scale_warned = False
+
+
+def _warn_partial_share() -> None:
+    global _scale_warned
+    if not _scale_warned:
+        _scale_warned = True
+        print(
+            "[computer] The shared monitors do not span the whole desktop, so the "
+            "screenshot scale is estimated. Share every monitor in the portal dialog.",
+            flush=True,
+        )
 
 
 def available() -> str | None:
