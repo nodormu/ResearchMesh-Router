@@ -316,7 +316,7 @@ worker MCP tools**.
     that failed to connect or has died is absent: absent and unreachable are the
     same thing to the model.
   - **`/dagent [worker] <task>`** — one turn with the local tools withheld,
-    optionally pinned to one machine. It filters `tools` instead of instructing
+    pinned to one machine when a worker is named. It filters `tools` instead of instructing
     the model: a local `bash` matches any concrete command better than a
     `delegate` that takes minutes, so an instruction is a preference and an
     absent schema is a fact. `_DELEGATE_ONLY_SUFFIX` is appended to the system

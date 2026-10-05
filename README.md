@@ -70,7 +70,7 @@ not in this client.
 | `memory` | A `/memories` store that **persists across sessions** — the only state that outlives the process |
 | `computer` | Screenshots plus mouse/keyboard control, on X11 (`pyautogui`) or Wayland (xdg-desktop-portal remote control; needs `dbus-next` and `spectacle` or `grim`) |
 | `desktop_window` | List windows, and focus, move, resize, full-screen, minimize or restore one, on a KDE desktop (KWin scripting; needs `dbus-next`), so keystrokes reach the right window |
-| `screen_find` | Find on-screen text (`text`) or button-like blocks (`buttons: true`), optionally inside a `region`, by OCR, and return click coordinates in `computer`'s space; reads text on coloured buttons that plain OCR misses (needs `tesseract`) |
+| `screen_find` | Find on-screen text (`text`) or button-like blocks (`buttons: true`), limited to a `region` if given, by OCR, and return click coordinates in `computer`'s space; reads text on coloured buttons that plain OCR misses (needs `tesseract`) |
 | `browser_navigate` · `_links` · `_click` · `_fill` · `_extract` · `_back` · `_tab` | [Playwright](https://playwright.dev/) DOM browsing: renders JavaScript, follows links and new tabs, fills forms, saves downloads to `~/Downloads`. `_navigate` takes `mode` and `profile` (see below), `_tab` lists, switches and closes tabs, and `_fill` takes a `pass` vault entry (`value_secret`) without the value appearing in the conversation, or `submit` to press Enter afterwards |
 | `document_convert` | LibreOffice + pandoc. Markdown → `.docx`/`.odt`/`.pdf`, or any office format to any other |
 | `python` | Persistent IPython kernel — **variables survive between calls** |
