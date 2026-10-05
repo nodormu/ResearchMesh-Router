@@ -87,16 +87,24 @@ not in this client.
 **Browser modes.** `browser_navigate` takes `mode` and `profile`:
 
 - `headless` (default): no window; installed Chrome if present, else bundled Chromium.
-- `headed`: a visible window on your desktop.
+- `headed`: a visible window on your desktop (`headed: true` is an alias).
 - `virtual`: Chrome on a hidden display (Xvfb); no window appears.
 - `real`: your installed Chrome started normally and attached over CDP, the least
-  detectable mode. It opens a window you can click in.
-- `profile` names a persistent profile (cookies and logins survive restarts) under
-  `~/.cache/researchmesh/browser-profiles`. Without one the session is temporary.
-  Changing mode or profile restarts the browser.
+  detectable mode. It opens a window you can click in and is closed when the
+  client exits.
+- `virtual` and `real` need Google Chrome (`google-chrome` or
+  `google-chrome-stable` on `PATH`); `virtual` also needs `xvfb`. `headed` and
+  `real` need `DISPLAY` or `WAYLAND_DISPLAY` and return an error without one.
+- `profile` names a persistent profile (1-40 letters, digits, `-`, `_`; cookies and
+  logins survive restarts) under `~/.cache/researchmesh/browser-profiles`, mode
+  700. Without one the session's profile is deleted when it closes. Changing mode
+  or profile restarts the browser.
 - A report carries a `Human check:` line when a Cloudflare check appears. A fresh
   default-mode visit that a check stops is reopened once in `virtual` mode; if it
   still says pending, use `real` or click the check yourself.
+- Downloads are saved to `~/Downloads` (`RESEARCHMESH_DOWNLOAD_DIR` overrides)
+  under a unique name, so an existing file is never overwritten, and are listed as
+  `Downloaded:` lines in the result.
 
 Every machine has its own copy of all this. The `python` kernel here is not a
 worker's kernel, and `/memories` here is not a worker's memory store. Same names,
@@ -189,7 +197,11 @@ new session). It needs `dbus-next` (in `requirements.txt`) and `spectacle` or
 `grim` for screenshots. The screen is one monitor: the leftmost one shared in the
 dialog, or `CLAUDE_COMPUTER_MONITOR=<index>`. Share every monitor in the dialog.
 With only some shared, the screenshot scale is estimated (exact when they span the
-desktop's width or height) and a warning is printed.
+desktop's width or height) and a warning is printed. Typing goes through keysyms;
+on Plasma 6 capitals and symbols arrive as written. The pointer position is not
+readable from Wayland: `cursor_position` returns an error until the pointer has
+moved once. On KDE, `desktop_window` focuses the window that should receive
+keystrokes and `screen_find` returns click coordinates by OCR.
 `CLAUDE_DISPLAY_SIZE=WxH` sets the logical display size declared to the model
 (default `1280x800`). Screenshots go to the model, as for any use of this tool.
 To use X11/XTEST on an XWayland-only setup or inside a nested X server instead:
@@ -379,7 +391,9 @@ own messages this session, so the model cannot pick one on its own. When it need
 a credential it lists the real entry names and waits for you to name one. A typed
 name stays confirmed for the rest of the session and for any use. The match is on
 the whole name anywhere in your message, so a passing mention ("push it to github"
-with an entry named `github`) also confirms it.
+with an entry named `github`) also confirms it. A task delegated to a worker never
+counts as your message there, so a delegated task cannot unlock the worker's
+vault entries.
 
 **What is and is not protected:**
 
@@ -399,7 +413,8 @@ with an entry named `github`) also confirms it.
 - Only the first line of a `pass` entry is used.
 - A GPG passphrase prompt (`pinentry`) appears on your screen, not in the
   conversation. If the key is not cached and nobody answers, `pass show` times
-  out after 30 s; unlock the key once in your own terminal first.
+  out after 30 s and its whole process group (`pass` and the `gpg` it started) is
+  killed; unlock the key once in your own terminal first.
 - `computer` has no vault option: type a password into a native window yourself.
 - A one-time code (authenticator, SMS, email) is not a vault secret. Paste it in
   the chat and the agent enters it at once with `browser_fill` `submit: true`.
