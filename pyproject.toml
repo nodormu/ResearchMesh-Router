@@ -3,7 +3,7 @@ name = "ResearchMesh-Router"
 version = "0.1.0"
 description = "A CLI orchestrator that routes work across a fleet of ResearchMesh MCP workers."
 readme = "README.md"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"   # tomllib (used by main.py) is stdlib only from 3.11
 # Every dependency here is required by the tool it backs. The array is flat, as in

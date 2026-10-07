@@ -36,7 +36,7 @@ task, what its local tools are).
 ## Origin
 
 A standalone project. The CLI shell, the Anthropic wrapper and the MCP client
-began as copies from ResearchMesh (same author, MIT); knowing which parts are
+began as copies from ResearchMesh (same author, AGPL-3.0-or-later); knowing which parts are
 inherited tells you where to be careful.
 
 | File | Where it came from |

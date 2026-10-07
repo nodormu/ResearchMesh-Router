@@ -783,7 +783,7 @@ sudo apt install -y hunspell        # command-line spell-checking
 ## Origin
 
 The CLI shell, Anthropic wrapper and MCP client began as copies from
-[ResearchMesh](https://github.com/nodormu/ResearchMesh) (same author, MIT), and
+[ResearchMesh](https://github.com/nodormu/ResearchMesh) (same author, AGPL-3.0-or-later), and
 the tool modules are copies kept identical in code. Docstrings and comments here
 are shorter, so compare the parsed code with docstrings stripped, not the bytes.
 The files in `core/` that differ in code are `browser.py`, `chat.py`, `cli.py`,
@@ -805,4 +805,6 @@ namespaces MCP tools as `mcp__<server>__<tool>`.
 
 ## License
 
-[MIT](LICENSE) — use it, fork it, ship it. No warranty; see the file for the full text.
+[AGPL-3.0-or-later](LICENSE), Copyright (c) 2026 nodormu. You may use, modify and share this software. If you distribute a modified version, or let other people use a modified version over a network (for example by running it as a hosted service), you must offer them the complete source of your version under the same license. No warranty; see the file for the full text.
+
+The copyright holder may also use this code in other projects under other terms.
